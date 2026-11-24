@@ -18,7 +18,7 @@ export interface LlmProvider {
 
 export type FetchLike = typeof fetch
 
-const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest'
+const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash'
 const DEFAULT_TIMEOUT_MS = 10_000
 
 function extractJsonText(raw: string): string {
