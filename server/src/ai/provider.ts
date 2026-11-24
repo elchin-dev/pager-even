@@ -19,7 +19,7 @@ export interface LlmProvider {
 export type FetchLike = typeof fetch
 
 const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash'
-const DEFAULT_TIMEOUT_MS = 10_000
+const DEFAULT_TIMEOUT_MS = 20_000
 
 function extractJsonText(raw: string): string {
   const trimmed = raw.trim()
@@ -104,6 +104,9 @@ export function createGeminiProvider(config: {
               responseMimeType: 'application/json',
               temperature: 0.2,
               maxOutputTokens: opts.maxTokens ?? 600,
+              thinkingConfig: {
+                thinkingBudget: 0,
+              },
             },
           }),
           signal: AbortSignal.timeout(timeoutMs),
