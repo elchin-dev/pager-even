@@ -15,12 +15,16 @@ import {
   UnauthorizedError,
   clearDeviceToken,
   fetchInbox,
+  fetchMessageCard,
   getPairingStatus,
   getStoredDeviceToken,
   saveDeviceToken,
+  sendMessageReply,
+  skipMessage,
   startPairing,
   subscribeInboxStream,
   type InboxItem,
+  type MessageCard,
 } from '../lib/api'
 import {
   renderPhoneError,
@@ -45,7 +49,23 @@ const INBOX_LIST_NAME = 'inbox-list'
 const INBOX_EMPTY_ID = 12
 const INBOX_EMPTY_NAME = 'inbox-empty'
 
+const CARD_HEADER_ID = 20
+const CARD_HEADER_NAME = 'card-header'
+const CARD_GIST_ID = 21
+const CARD_GIST_NAME = 'card-gist'
+const CARD_DRAFTS_ID = 22
+const CARD_DRAFTS_NAME = 'card-drafts'
+
+const SENDING_HEADER_ID = 30
+const SENDING_HEADER_NAME = 'sending-header'
+const SENDING_BODY_ID = 31
+const SENDING_BODY_NAME = 'sending-body'
+
+const SEND_UNDO_SECONDS = 3
+
 const MENU_REFRESH_ID = 1
+const MENU_SKIP_ID = 2
+const MENU_BACK_ID = 3
 
 type AppScreen =
   | 'pairing'
@@ -53,16 +73,23 @@ type AppScreen =
   | 'pairing-error'
   | 'inbox'
   | 'inbox-error'
+  | 'card'
+  | 'sending'
 
 function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeList | null {
   if (!envelope) return null
   return envelope.eventType ?? OsEventTypeList.CLICK_EVENT
 }
 
-function buildMenuObject(): MenuContainerProperty {
-  return new MenuContainerProperty({
-    menuItems: [new MenuItemProperty({ itemName: 'Refresh', itemID: MENU_REFRESH_ID })],
-  })
+function buildMenuObject(includeCardActions = false): MenuContainerProperty {
+  const menuItems = [new MenuItemProperty({ itemName: 'Refresh', itemID: MENU_REFRESH_ID })]
+  if (includeCardActions) {
+    menuItems.push(
+      new MenuItemProperty({ itemName: 'Skip', itemID: MENU_SKIP_ID }),
+      new MenuItemProperty({ itemName: 'Back', itemID: MENU_BACK_ID }),
+    )
+  }
+  return new MenuContainerProperty({ menuItems })
 }
 
 function formatInboxListLine(item: InboxItem): string {
@@ -170,6 +197,109 @@ function buildInboxPayload(items: InboxItem[], overrideEmptyText?: string): {
   }
 }
 
+function buildCardPayload(card: MessageCard): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  listObject: ListContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const prefix = card.priority === 'urgent' ? '! ' : ''
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: CARD_HEADER_ID,
+    containerName: CARD_HEADER_NAME,
+    content: `${prefix}${card.from}  [${card.intent}]`.slice(0, 64),
+    isEventCapture: 0,
+  })
+
+  const gist = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 44,
+    width: 576,
+    height: 72,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: CARD_GIST_ID,
+    containerName: CARD_GIST_NAME,
+    content: card.gist,
+    isEventCapture: 0,
+  })
+
+  const draftItems = card.drafts.map((draft) => draft.lens.slice(0, 64))
+  const drafts = new ListContainerProperty({
+    xPosition: 0,
+    yPosition: 118,
+    width: 576,
+    height: 170,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: CARD_DRAFTS_ID,
+    containerName: CARD_DRAFTS_NAME,
+    isEventCapture: 1,
+    itemContainer: new ListItemContainerProperty({
+      itemCount: draftItems.length,
+      itemWidth: 560,
+      isItemSelectBorderEn: 1,
+      itemName: draftItems,
+    }),
+  })
+
+  return {
+    containerTotalNum: 3,
+    textObject: [header, gist],
+    listObject: [drafts],
+    menuObject: buildMenuObject(true),
+  }
+}
+
+function buildSendingPayload(draftLens: string, secondsLeft: number): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: SENDING_HEADER_ID,
+    containerName: SENDING_HEADER_NAME,
+    content: `Sending in ${secondsLeft}s…`,
+    isEventCapture: 0,
+  })
+
+  const body = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 46,
+    width: 576,
+    height: 242,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: SENDING_BODY_ID,
+    containerName: SENDING_BODY_NAME,
+    content: `${draftLens}\n\n2x tap to cancel`,
+    isEventCapture: 1,
+  })
+
+  return {
+    containerTotalNum: 2,
+    textObject: [header, body],
+    menuObject: buildMenuObject(false),
+  }
+}
+
 export async function startGlassesApp(): Promise<void> {
   const bridge: EvenAppBridge = await waitForEvenAppBridge()
 
@@ -184,6 +314,12 @@ export async function startGlassesApp(): Promise<void> {
   let pendingInboxTimer: number | null = null
   let isRefreshingInbox = false
   let stopSse: (() => void) | null = null
+
+  let activeCard: MessageCard | null = null
+  let cardDraftIndex = 0
+  let sendTimer: number | null = null
+  let sendCancelled = false
+  let isActionInFlight = false
 
   function stopPolling(): void {
     activePairRunId += 1
@@ -204,6 +340,13 @@ export async function startGlassesApp(): Promise<void> {
     }
   }
 
+  function stopSendTimer(): void {
+    if (sendTimer !== null) {
+      window.clearInterval(sendTimer)
+      sendTimer = null
+    }
+  }
+
   async function updatePairBody(content: string): Promise<void> {
     await bridge.textContainerUpgrade(
       new TextContainerUpgrade({
@@ -216,8 +359,12 @@ export async function startGlassesApp(): Promise<void> {
 
   async function handleUnauthorized(): Promise<void> {
     stopInboxSync()
+    stopSendTimer()
     inboxItems = []
     selectedIndex = 0
+    activeCard = null
+    cardDraftIndex = 0
+    isActionInFlight = false
     await clearDeviceToken(bridge)
     screen = 'pairing'
     renderPhoneLoading('Session expired. Re-pairing…')
@@ -331,6 +478,131 @@ export async function startGlassesApp(): Promise<void> {
     }
   }
 
+  async function returnToInbox(): Promise<void> {
+    stopSendTimer()
+    activeCard = null
+    cardDraftIndex = 0
+    screen = 'inbox'
+    await refreshInboxNow()
+  }
+
+  async function openCard(id: number): Promise<void> {
+    if (disposed || isActionInFlight) return
+    isActionInFlight = true
+    try {
+      const card = await fetchMessageCard(bridge, id)
+      if (disposed) return
+      activeCard = card
+      cardDraftIndex = 0
+      screen = 'card'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildCardPayload(card)),
+      )
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        console.warn('[card] load failed:', err instanceof Error ? err.message : err)
+        await returnToInbox()
+      }
+    } finally {
+      isActionInFlight = false
+    }
+  }
+
+  async function skipActiveCard(): Promise<void> {
+    if (disposed || !activeCard || isActionInFlight) return
+    isActionInFlight = true
+    const cardId = activeCard.id
+    try {
+      await skipMessage(bridge, cardId)
+      await returnToInbox()
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        console.warn('[card] skip failed:', err instanceof Error ? err.message : err)
+        await returnToInbox()
+      }
+    } finally {
+      isActionInFlight = false
+    }
+  }
+
+  async function executeSend(cardId: number, draftIndex: number): Promise<void> {
+    if (disposed || isActionInFlight) return
+    isActionInFlight = true
+    try {
+      await sendMessageReply(bridge, cardId, draftIndex)
+      await returnToInbox()
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        console.warn('[send] failed:', err instanceof Error ? err.message : err)
+        if (activeCard && !disposed) {
+          screen = 'card'
+          await bridge.rebuildPageContainer(
+            new RebuildPageContainer(buildCardPayload(activeCard)),
+          )
+        } else {
+          await returnToInbox()
+        }
+      }
+    } finally {
+      isActionInFlight = false
+    }
+  }
+
+  async function startSendCountdown(): Promise<void> {
+    if (disposed || !activeCard || isActionInFlight) return
+    const draft = activeCard.drafts[cardDraftIndex] ?? activeCard.drafts[0]
+    if (!draft) return
+
+    stopSendTimer()
+    sendCancelled = false
+    screen = 'sending'
+    let secondsLeft = SEND_UNDO_SECONDS
+
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(buildSendingPayload(draft.lens, secondsLeft)),
+    )
+    if (disposed || sendCancelled || screen !== 'sending') return
+
+    const cardId = activeCard.id
+    sendTimer = window.setInterval(() => {
+      if (disposed || sendCancelled || screen !== 'sending') {
+        stopSendTimer()
+        return
+      }
+      secondsLeft -= 1
+      if (secondsLeft > 0) {
+        void bridge.textContainerUpgrade(
+          new TextContainerUpgrade({
+            containerID: SENDING_HEADER_ID,
+            containerName: SENDING_HEADER_NAME,
+            content: `Sending in ${secondsLeft}s…`,
+          }),
+        )
+        return
+      }
+
+      stopSendTimer()
+      void executeSend(cardId, draft.index)
+    }, 1000)
+  }
+
+  async function cancelSendCountdown(): Promise<void> {
+    sendCancelled = true
+    stopSendTimer()
+    if (!disposed && activeCard) {
+      screen = 'card'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildCardPayload(activeCard)),
+      )
+    }
+  }
+
   async function beginPairingFlow(): Promise<void> {
     stopPolling()
     stopInboxSync()
@@ -423,6 +695,7 @@ export async function startGlassesApp(): Promise<void> {
       disposed = true
       stopPolling()
       stopInboxSync()
+      stopSendTimer()
       unsubscribe()
       return
     }
@@ -432,23 +705,45 @@ export async function startGlassesApp(): Promise<void> {
       textType === OsEventTypeList.DOUBLE_CLICK_EVENT ||
       listType === OsEventTypeList.DOUBLE_CLICK_EVENT
     ) {
+      if (screen === 'sending') {
+        void cancelSendCountdown()
+        return
+      }
+      if (screen === 'card') {
+        void skipActiveCard()
+        return
+      }
       disposed = true
       stopPolling()
       stopInboxSync()
+      stopSendTimer()
       void bridge.shutDownPageContainer(1)
       return
     }
 
     if (event.menuItemClickEvent) {
-      console.log('[menu] clicked:', event.menuItemClickEvent.itemID)
-      if (event.menuItemClickEvent.itemID === MENU_REFRESH_ID && screen === 'inbox') {
-        scheduleInboxRefresh(true)
+      const itemId = event.menuItemClickEvent.itemID
+      console.log('[menu] clicked:', itemId)
+      if (itemId === MENU_REFRESH_ID) {
+        if (screen === 'inbox') {
+          scheduleInboxRefresh(true)
+        } else if (screen === 'card' && activeCard) {
+          void openCard(activeCard.id)
+        }
+      } else if (itemId === MENU_SKIP_ID && screen === 'card') {
+        void skipActiveCard()
+      } else if (itemId === MENU_BACK_ID && screen === 'card') {
+        void returnToInbox()
       }
       return
     }
 
     if (event.listEvent?.currentSelectItemIndex !== undefined) {
-      selectedIndex = event.listEvent.currentSelectItemIndex
+      if (screen === 'inbox') {
+        selectedIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'card') {
+        cardDraftIndex = event.listEvent.currentSelectItemIndex
+      }
     }
 
     if (
@@ -469,10 +764,17 @@ export async function startGlassesApp(): Promise<void> {
       if (screen === 'inbox' && inboxItems.length > 0) {
         const idx = event.listEvent?.currentSelectItemIndex ?? selectedIndex
         const selected = inboxItems[idx]
-        console.log('[inbox] item tapped:', {
-          index: idx,
-          item: selected ?? null,
-        })
+        if (selected) {
+          void openCard(selected.id)
+        }
+        return
+      }
+
+      if (screen === 'card' && activeCard) {
+        if (event.listEvent?.currentSelectItemIndex !== undefined) {
+          cardDraftIndex = event.listEvent.currentSelectItemIndex
+        }
+        void startSendCountdown()
       }
     }
   })

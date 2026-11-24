@@ -4,6 +4,7 @@ import type { AppDb } from './db/index.js'
 import { logger } from './lib/logger.js'
 import { createBearerAuthMiddleware, type AuthEnv } from './middleware/auth.js'
 import { createInboxRouter } from './routes/inbox.js'
+import { createMsgRouter, type SendTelegramMessageFn } from './routes/msg.js'
 import { createPairRouter, type PairRouterOptions } from './routes/pair.js'
 import { createStreamRouter } from './routes/stream.js'
 import { createTgRouter, type TgRouterOptions } from './routes/tg.js'
@@ -13,6 +14,7 @@ export interface AppOptions {
   db?: AppDb
   tg?: TgRouterOptions
   pair?: PairRouterOptions
+  sendTelegramMessage?: SendTelegramMessageFn
 }
 
 export function createApp(options?: AppOptions): Hono<AuthEnv> {
@@ -43,6 +45,13 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
   app.use('/api/*', createBearerAuthMiddleware(options?.db))
   app.route('/api/pair', createPairRouter({ db: options?.db, ...options?.pair }))
   app.route('/api/inbox', createInboxRouter({ db: options?.db }))
+  app.route(
+    '/api/msg',
+    createMsgRouter({
+      db: options?.db,
+      sendTelegramMessage: options?.sendTelegramMessage,
+    }),
+  )
   app.route('/api/stream', createStreamRouter())
 
   app.notFound((c) => {

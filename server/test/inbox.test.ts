@@ -319,7 +319,7 @@ test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above need
   assert.equal(body.items.length, 2)
   assert.equal(body.items[0]?.chatId, 404)
   assert.equal(body.items[0]?.priority, 'urgent')
-  assert.equal(body.items[0]?.preview, 'Asks for KP by 17:00')
+  assert.equal(body.items[0]?.preview, 'KP by 17:00?')
   assert.equal(body.items[1]?.chatId, 403)
   assert.equal(body.items[1]?.priority, 'needs_reply')
 

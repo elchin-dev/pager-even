@@ -78,7 +78,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
         id: row.id,
         chatId: row.chatId,
         from: toLens(row.fromName, 12),
-        preview: toLens(ai?.gist || row.text || '[media]', 40),
+        preview: toLens(row.text || '[media]', 40),
         count: 1,
         priority,
         receivedAt: row.receivedAt,

@@ -37,6 +37,22 @@ export interface InboxResponse {
   items: InboxItem[]
 }
 
+export interface MessageDraft {
+  index: number
+  lens: string
+}
+
+export interface MessageCard {
+  id: number
+  chatId: number
+  from: string
+  priority: 'urgent' | 'needs_reply'
+  intent: 'reply' | 'schedule' | 'info'
+  gist: string
+  text: string
+  drafts: MessageDraft[]
+}
+
 export async function getStoredDeviceToken(bridge: EvenAppBridge): Promise<string | null> {
   try {
     const raw = await bridge.getLocalStorage(DEVICE_TOKEN_KEY)
@@ -102,6 +118,36 @@ export async function fetchInbox(bridge: EvenAppBridge): Promise<InboxItem[]> {
   const res = await apiFetch(bridge, '/api/inbox', { method: 'GET' })
   const data = await parseJson<InboxResponse>(res)
   return data.items
+}
+
+export async function fetchMessageCard(
+  bridge: EvenAppBridge,
+  id: number,
+): Promise<MessageCard> {
+  const res = await apiFetch(bridge, `/api/msg/${id}`, { method: 'GET' })
+  return parseJson<MessageCard>(res)
+}
+
+export async function sendMessageReply(
+  bridge: EvenAppBridge,
+  id: number,
+  draftIndex: number,
+): Promise<{ ok: true; tgMessageId: number }> {
+  const res = await apiFetch(bridge, `/api/msg/${id}/send`, {
+    method: 'POST',
+    body: JSON.stringify({ draftIndex }),
+  })
+  return parseJson<{ ok: true; tgMessageId: number }>(res)
+}
+
+export async function skipMessage(
+  bridge: EvenAppBridge,
+  id: number,
+): Promise<{ ok: true }> {
+  const res = await apiFetch(bridge, `/api/msg/${id}/skip`, {
+    method: 'POST',
+  })
+  return parseJson<{ ok: true }>(res)
 }
 
 export function subscribeInboxStream(
