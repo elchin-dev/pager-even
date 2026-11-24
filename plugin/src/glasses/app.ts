@@ -47,7 +47,12 @@ const INBOX_EMPTY_NAME = 'inbox-empty'
 
 const MENU_REFRESH_ID = 1
 
-type AppScreen = 'pairing' | 'pairing-expired' | 'pairing-error' | 'inbox'
+type AppScreen =
+  | 'pairing'
+  | 'pairing-expired'
+  | 'pairing-error'
+  | 'inbox'
+  | 'inbox-error'
 
 function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeList | null {
   if (!envelope) return null
@@ -226,11 +231,14 @@ export async function startGlassesApp(): Promise<void> {
   }
 
   async function refreshInboxNow(): Promise<void> {
-    if (disposed || screen !== 'inbox' || isRefreshingInbox) return
+    if (disposed || (screen !== 'inbox' && screen !== 'inbox-error') || isRefreshingInbox) {
+      return
+    }
     isRefreshingInbox = true
     try {
       const items = await fetchInbox(bridge)
-      if (disposed || screen !== 'inbox') return
+      if (disposed || (screen !== 'inbox' && screen !== 'inbox-error')) return
+      screen = 'inbox'
       inboxItems = items
       if (selectedIndex >= inboxItems.length) {
         selectedIndex = 0
@@ -244,7 +252,17 @@ export async function startGlassesApp(): Promise<void> {
       if (err instanceof UnauthorizedError) {
         await handleUnauthorized()
       } else {
-        console.warn('[inbox] refresh failed:', err)
+        const msg = err instanceof Error ? err.message : 'Load failed'
+        console.warn('[inbox] refresh failed:', msg)
+        screen = 'inbox-error'
+        renderPhoneError(msg, () => {
+          void refreshInboxNow()
+        })
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(
+            buildInboxPayload([], `Error: ${msg}\nTap to retry`),
+          ),
+        )
       }
     } finally {
       isRefreshingInbox = false
@@ -439,6 +457,11 @@ export async function startGlassesApp(): Promise<void> {
     ) {
       if (screen === 'pairing-error' || screen === 'pairing-expired') {
         void beginPairingFlow()
+        return
+      }
+
+      if (screen === 'inbox-error') {
+        void refreshInboxNow()
         return
       }
 
