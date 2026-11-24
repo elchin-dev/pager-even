@@ -25,9 +25,11 @@ export type PairStatusResponse =
   | { status: 'paired'; deviceToken: string }
 
 export type FeedMode = 'urgent' | 'all'
+export type ChatView = 'new_only' | 'with_history'
 
 export interface UserSettings {
   feedMode: FeedMode
+  chatView: ChatView
   voiceEnabled: boolean
   conflictAlerts: boolean
 }
@@ -50,6 +52,7 @@ export interface InboxCounts {
 
 export interface InboxResponse {
   mode: FeedMode
+  chatView: ChatView
   counts: InboxCounts
   items: InboxItem[]
 }

@@ -1,3 +1,5 @@
+import type { ChatView, FeedMode } from '../lib/api'
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -68,16 +70,57 @@ export function renderPhoneError(message: string, onRetry: () => void): void {
   document.getElementById('pager-retry-btn')?.addEventListener('click', onRetry)
 }
 
-export function renderPhoneInbox(count = 0): void {
+export function renderPhoneInbox(
+  count = 0,
+  settings?: {
+    feedMode: FeedMode
+    chatView: ChatView
+    onUpdate: (patch: { feedMode?: FeedMode; chatView?: ChatView }) => void
+  },
+): void {
   const root = getRoot()
   const subtitle =
     count === 0
       ? 'All clear ✓'
-      : `${count} ${count === 1 ? 'chat needs' : 'chats need'} reply on your G2 glasses.`
+      : `${count} ${count === 1 ? 'chat' : 'chats'} on your G2 glasses.`
+
+  const settingsHtml = settings
+    ? `
+      <div style="margin-top:20px;border-top:1px solid #2b303c;padding-top:16px;text-align:left;">
+        <div style="font-size:12px;color:#9ca3af;margin-bottom:8px;">Feed mode</div>
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <button type="button" id="pager-mode-urgent" class="btn" style="flex:1;padding:8px 10px;opacity:${settings.feedMode === 'urgent' ? '1' : '0.45'}">Urgent</button>
+          <button type="button" id="pager-mode-all" class="btn" style="flex:1;padding:8px 10px;opacity:${settings.feedMode === 'all' ? '1' : '0.45'}">All</button>
+        </div>
+        <div style="font-size:12px;color:#9ca3af;margin-bottom:8px;">Chats &amp; History</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <button type="button" id="pager-view-new" class="btn" style="padding:8px 10px;opacity:${settings.chatView === 'new_only' ? '1' : '0.45'}">Unread only (hide after reply)</button>
+          <button type="button" id="pager-view-history" class="btn" style="padding:8px 10px;opacity:${settings.chatView === 'with_history' ? '1' : '0.45'}">All chats with history</button>
+        </div>
+      </div>
+    `
+    : ''
+
   root.innerHTML = `
     <div class="card">
       <h1>Pager connected ✓</h1>
       <p class="muted">${escapeHtml(subtitle)}</p>
+      ${settingsHtml}
     </div>
   `
+
+  if (settings) {
+    document.getElementById('pager-mode-urgent')?.addEventListener('click', () => {
+      if (settings.feedMode !== 'urgent') settings.onUpdate({ feedMode: 'urgent' })
+    })
+    document.getElementById('pager-mode-all')?.addEventListener('click', () => {
+      if (settings.feedMode !== 'all') settings.onUpdate({ feedMode: 'all' })
+    })
+    document.getElementById('pager-view-new')?.addEventListener('click', () => {
+      if (settings.chatView !== 'new_only') settings.onUpdate({ chatView: 'new_only' })
+    })
+    document.getElementById('pager-view-history')?.addEventListener('click', () => {
+      if (settings.chatView !== 'with_history') settings.onUpdate({ chatView: 'with_history' })
+    })
+  }
 }

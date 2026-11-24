@@ -23,6 +23,9 @@ export const userSettings = sqliteTable('user_settings', {
   feedMode: text('feed_mode', { enum: ['urgent', 'all'] })
     .notNull()
     .default('urgent'),
+  chatView: text('chat_view', { enum: ['new_only', 'with_history'] })
+    .notNull()
+    .default('new_only'),
   voiceEnabled: integer('voice_enabled', { mode: 'boolean' })
     .notNull()
     .default(true),
@@ -100,6 +103,7 @@ export const messages = sqliteTable(
     fromTgUserId: integer('from_tg_user_id'),
     fromName: text('from_name').notNull(),
     businessConnectionId: text('business_connection_id'),
+    isFromOwner: integer('is_from_owner', { mode: 'boolean' }).notNull().default(false),
     text: text('text').notNull(),
     receivedAt: integer('received_at').notNull(),
     status: text('status', {

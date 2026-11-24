@@ -24,6 +24,7 @@ import {
   startPairing,
   subscribeInboxStream,
   updateSettings,
+  type ChatView,
   type FeedMode,
   type InboxCounts,
   type InboxItem,
@@ -70,6 +71,7 @@ const MENU_REFRESH_ID = 1
 const MENU_SKIP_ID = 2
 const MENU_BACK_ID = 3
 const MENU_MODE_ID = 4
+const MENU_CHAT_VIEW_ID = 5
 
 type AppScreen =
   | 'pairing'
@@ -88,6 +90,7 @@ function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeLis
 function buildMenuObject(includeCardActions = false): MenuContainerProperty {
   const menuItems = [
     new MenuItemProperty({ itemName: 'Mode: Urgent/All', itemID: MENU_MODE_ID }),
+    new MenuItemProperty({ itemName: 'Chat: New/History', itemID: MENU_CHAT_VIEW_ID }),
     new MenuItemProperty({ itemName: 'Refresh', itemID: MENU_REFRESH_ID }),
   ]
   if (includeCardActions) {
@@ -248,7 +251,7 @@ function buildCardPayload(card: MessageCard): {
     xPosition: 0,
     yPosition: 44,
     width: 576,
-    height: 72,
+    height: 92,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,
@@ -261,9 +264,9 @@ function buildCardPayload(card: MessageCard): {
   const draftItems = card.drafts.map((draft) => draft.lens.slice(0, 64))
   const drafts = new ListContainerProperty({
     xPosition: 0,
-    yPosition: 118,
+    yPosition: 138,
     width: 576,
-    height: 170,
+    height: 150,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,
@@ -341,6 +344,7 @@ export async function startGlassesApp(): Promise<void> {
 
   let inboxItems: InboxItem[] = []
   let feedMode: FeedMode = 'urgent'
+  let chatView: ChatView = 'new_only'
   let inboxCounts: InboxCounts = { urgent: 0, all: 0 }
   let selectedIndex = 0
   let lastInboxRebuildAt = 0
@@ -421,13 +425,20 @@ export async function startGlassesApp(): Promise<void> {
       if (disposed || (screen !== 'inbox' && screen !== 'inbox-error')) return
       screen = 'inbox'
       feedMode = data.mode
+      chatView = data.chatView
       inboxCounts = data.counts
       inboxItems = data.items
       if (selectedIndex >= inboxItems.length) {
         selectedIndex = 0
       }
       lastInboxRebuildAt = Date.now()
-      renderPhoneInbox(inboxItems.length)
+      renderPhoneInbox(inboxItems.length, {
+        feedMode,
+        chatView,
+        onUpdate: (patch) => {
+          void applySettingsPatch(patch)
+        },
+      })
       await bridge.rebuildPageContainer(
         new RebuildPageContainer(buildInboxPayload(inboxItems, feedMode, inboxCounts)),
       )
@@ -525,14 +536,17 @@ export async function startGlassesApp(): Promise<void> {
     await refreshInboxNow()
   }
 
-  async function toggleFeedMode(): Promise<void> {
+  async function applySettingsPatch(patch: {
+    feedMode?: FeedMode
+    chatView?: ChatView
+  }): Promise<void> {
     if (disposed || isActionInFlight) return
     isActionInFlight = true
-    const nextMode: FeedMode = feedMode === 'urgent' ? 'all' : 'urgent'
     try {
-      const updated = await updateSettings(bridge, { feedMode: nextMode })
+      const updated = await updateSettings(bridge, patch)
       if (disposed) return
       feedMode = updated.feedMode
+      chatView = updated.chatView
       selectedIndex = 0
       stopSendTimer()
       activeCard = null
@@ -543,11 +557,21 @@ export async function startGlassesApp(): Promise<void> {
       if (err instanceof UnauthorizedError) {
         await handleUnauthorized()
       } else {
-        console.warn('[settings] toggle feed mode failed:', err instanceof Error ? err.message : err)
+        console.warn('[settings] update failed:', err instanceof Error ? err.message : err)
       }
     } finally {
       isActionInFlight = false
     }
+  }
+
+  async function toggleFeedMode(): Promise<void> {
+    const nextMode: FeedMode = feedMode === 'urgent' ? 'all' : 'urgent'
+    await applySettingsPatch({ feedMode: nextMode })
+  }
+
+  async function toggleChatView(): Promise<void> {
+    const nextView: ChatView = chatView === 'new_only' ? 'with_history' : 'new_only'
+    await applySettingsPatch({ chatView: nextView })
   }
 
   async function openCard(id: number): Promise<void> {
@@ -793,6 +817,10 @@ export async function startGlassesApp(): Promise<void> {
       if (itemId === MENU_MODE_ID) {
         if (screen === 'inbox' || screen === 'inbox-error' || screen === 'card') {
           void toggleFeedMode()
+        }
+      } else if (itemId === MENU_CHAT_VIEW_ID) {
+        if (screen === 'inbox' || screen === 'inbox-error' || screen === 'card') {
+          void toggleChatView()
         }
       } else if (itemId === MENU_REFRESH_ID) {
         if (screen === 'inbox') {

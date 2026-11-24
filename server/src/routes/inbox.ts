@@ -6,9 +6,10 @@ import { getDb, type AppDb } from '../db/index.js'
 import { messages } from '../db/schema.js'
 import { toLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
-import { getUserSettings, type FeedMode } from './settings.js'
+import { getUserSettings, type ChatView, type FeedMode } from './settings.js'
 
 const modeQuerySchema = z.enum(['urgent', 'all'])
+const chatViewQuerySchema = z.enum(['new_only', 'with_history'])
 
 const inboxAiSchema = triageResultSchema.extend({
   conflict: z
@@ -51,6 +52,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
   router.get('/', (c) => {
     const authUser = c.get('authUser')
     const db = options?.db ?? getDb()
+    const userCfg = getUserSettings(db, authUser.id)
 
     const rawMode = c.req.query('mode')
     let mode: FeedMode
@@ -61,68 +63,106 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
       }
       mode = parsedMode.data
     } else {
-      mode = getUserSettings(db, authUser.id).feedMode
+      mode = userCfg.feedMode
+    }
+
+    const rawChatView = c.req.query('chatView')
+    let chatView: ChatView
+    if (rawChatView !== undefined) {
+      const parsedChatView = chatViewQuerySchema.safeParse(rawChatView)
+      if (!parsedChatView.success) {
+        return c.json({ error: 'invalid_chat_view' }, 400)
+      }
+      chatView = parsedChatView.data
+    } else {
+      chatView = userCfg.chatView
     }
 
     const now = Date.now()
+    const baseWhere =
+      chatView === 'new_only'
+        ? and(
+            eq(messages.userId, authUser.id),
+            eq(messages.status, 'new'),
+            eq(messages.isFromOwner, false),
+            gt(messages.expiresAt, now),
+          )
+        : and(eq(messages.userId, authUser.id), gt(messages.expiresAt, now))
+
     const rows = db
       .select({
         id: messages.id,
         chatId: messages.chatId,
         fromName: messages.fromName,
+        isFromOwner: messages.isFromOwner,
+        status: messages.status,
         text: messages.text,
         aiJson: messages.aiJson,
         receivedAt: messages.receivedAt,
       })
       .from(messages)
-      .where(
-        and(
-          eq(messages.userId, authUser.id),
-          eq(messages.status, 'new'),
-          gt(messages.expiresAt, now),
-        ),
-      )
+      .where(baseWhere)
       .orderBy(desc(messages.receivedAt), desc(messages.id))
       .all()
 
-    const allGrouped = new Map<number, InboxItem & { receivedAt: number }>()
+    const allGrouped = new Map<
+      number,
+      InboxItem & { receivedAt: number; hasIncomingId: boolean }
+    >()
     const urgentGrouped = new Map<number, InboxItem & { receivedAt: number }>()
 
     for (const row of rows) {
-      const ai = parseAiJson(row.aiJson)
+      const isUnreadIncoming = !row.isFromOwner && row.status === 'new'
+      const ai = row.isFromOwner ? null : parseAiJson(row.aiJson)
       const priority: InboxItem['priority'] = ai?.priority ?? 'needs_reply'
       const hasConflict = Boolean(ai?.conflict)
       const hasDrafts = Boolean(ai && ai.drafts.length > 0)
       const isUrgentRow =
-        (priority === 'urgent' || (priority === 'needs_reply' && hasConflict)) && hasDrafts
+        isUnreadIncoming &&
+        (priority === 'urgent' || (priority === 'needs_reply' && hasConflict)) &&
+        hasDrafts
+
+      const formattedPreview = row.isFromOwner
+        ? toLens(`You: ${row.text || '[media]'}`, 40)
+        : toLens(row.text || '[media]', 40)
 
       const existingAll = allGrouped.get(row.chatId)
       if (existingAll) {
-        existingAll.count += 1
+        if (isUnreadIncoming) {
+          existingAll.count += 1
+        }
+        // In with_history, if the newest row was owner's reply, take contact name from incoming row
+        if (!row.isFromOwner && !existingAll.hasIncomingId) {
+          existingAll.id = row.id
+          existingAll.from = toLens(row.fromName, 12)
+          existingAll.hasIncomingId = true
+        }
         if (isUrgentRow) {
           if (!existingAll.urgent) {
             existingAll.id = row.id
-            existingAll.preview = toLens(row.text || '[media]', 40)
+            existingAll.preview = formattedPreview
+            existingAll.hasIncomingId = true
           }
           existingAll.urgent = true
           if (priority === 'urgent') {
             existingAll.priority = 'urgent'
           }
         }
-        if (hasConflict) {
+        if (isUnreadIncoming && hasConflict) {
           existingAll.hasConflict = true
         }
       } else {
         allGrouped.set(row.chatId, {
           id: row.id,
           chatId: row.chatId,
-          from: toLens(row.fromName, 12),
-          preview: toLens(row.text || '[media]', 40),
-          count: 1,
+          from: row.isFromOwner ? 'Chat' : toLens(row.fromName, 12),
+          preview: formattedPreview,
+          count: isUnreadIncoming ? 1 : 0,
           priority,
           urgent: isUrgentRow,
-          hasConflict,
+          hasConflict: isUnreadIncoming ? hasConflict : false,
           receivedAt: row.receivedAt,
+          hasIncomingId: !row.isFromOwner,
         })
       }
 
@@ -141,7 +181,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
             id: row.id,
             chatId: row.chatId,
             from: toLens(row.fromName, 12),
-            preview: toLens(row.text || '[media]', 40),
+            preview: formattedPreview,
             count: 1,
             priority,
             urgent: true,
@@ -156,10 +196,18 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
     const items = Array.from(source.values())
       .sort((a, b) => b.receivedAt - a.receivedAt)
       .slice(0, 10)
-      .map(({ receivedAt: _receivedAt, ...item }) => item)
+      .map((entry) => {
+        const { receivedAt: _receivedAt, ...rest } = entry
+        if ('hasIncomingId' in rest) {
+          const { hasIncomingId: _ignored, ...clean } = rest
+          return clean
+        }
+        return rest
+      })
 
     return c.json({
       mode,
+      chatView,
       counts: {
         urgent: urgentGrouped.size,
         all: allGrouped.size,

@@ -6,21 +6,25 @@ import { userSettings } from '../db/schema.js'
 import type { AuthEnv } from '../middleware/auth.js'
 
 export type FeedMode = 'urgent' | 'all'
+export type ChatView = 'new_only' | 'with_history'
 
 export interface UserSettingsDto {
   feedMode: FeedMode
+  chatView: ChatView
   voiceEnabled: boolean
   conflictAlerts: boolean
 }
 
 const DEFAULT_SETTINGS: UserSettingsDto = {
   feedMode: 'urgent',
+  chatView: 'new_only',
   voiceEnabled: true,
   conflictAlerts: true,
 }
 
 const updateSettingsSchema = z.object({
   feedMode: z.enum(['urgent', 'all']).optional(),
+  chatView: z.enum(['new_only', 'with_history']).optional(),
   voiceEnabled: z.boolean().optional(),
   conflictAlerts: z.boolean().optional(),
 })
@@ -38,6 +42,7 @@ export function getUserSettings(db: AppDb, userId: number): UserSettingsDto {
 
   return {
     feedMode: row.feedMode,
+    chatView: row.chatView,
     voiceEnabled: row.voiceEnabled,
     conflictAlerts: row.conflictAlerts,
   }
@@ -70,6 +75,7 @@ export function createSettingsRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
     const current = getUserSettings(db, authUser.id)
     const next: UserSettingsDto = {
       feedMode: parsed.data.feedMode ?? current.feedMode,
+      chatView: parsed.data.chatView ?? current.chatView,
       voiceEnabled: parsed.data.voiceEnabled ?? current.voiceEnabled,
       conflictAlerts: parsed.data.conflictAlerts ?? current.conflictAlerts,
     }
@@ -79,6 +85,7 @@ export function createSettingsRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
       .values({
         userId: authUser.id,
         feedMode: next.feedMode,
+        chatView: next.chatView,
         voiceEnabled: next.voiceEnabled,
         conflictAlerts: next.conflictAlerts,
         createdAt: now,
@@ -88,6 +95,7 @@ export function createSettingsRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
         target: userSettings.userId,
         set: {
           feedMode: next.feedMode,
+          chatView: next.chatView,
           voiceEnabled: next.voiceEnabled,
           conflictAlerts: next.conflictAlerts,
           updatedAt: now,

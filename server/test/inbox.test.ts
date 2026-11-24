@@ -228,11 +228,13 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
   assert.equal(settingsRes1.status, 200)
   const settings1 = (await settingsRes1.json()) as {
     feedMode: string
+    chatView: string
     voiceEnabled: boolean
     conflictAlerts: boolean
   }
   assert.deepEqual(settings1, {
     feedMode: 'urgent',
+    chatView: 'new_only',
     voiceEnabled: true,
     conflictAlerts: true,
   })
@@ -431,11 +433,13 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
   assert.equal(putRes.status, 200)
   const updatedSettings = (await putRes.json()) as {
     feedMode: string
+    chatView: string
     voiceEnabled: boolean
     conflictAlerts: boolean
   }
   assert.deepEqual(updatedSettings, {
     feedMode: 'all',
+    chatView: 'new_only',
     voiceEnabled: false,
     conflictAlerts: true,
   })
@@ -527,6 +531,60 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
   assert.equal(timur.count, 2)
   assert.equal(timur.urgent, true)
   assert.equal(timur.preview, 'Urgent: send contract now!')
+
+  // Verify with_history includes replied chats, while new_only hides them
+  db.insert(messages)
+    .values([
+      {
+        userId: 1,
+        chatId: 606,
+        tgMessageId: 1,
+        fromTgUserId: 606,
+        fromName: 'Sara',
+        businessConnectionId: 'bc_inbox_1',
+        isFromOwner: false,
+        text: 'Hello Sara msg',
+        receivedAt: now + 9000,
+        status: 'replied',
+        expiresAt: now + 86_400_000,
+      },
+      {
+        userId: 1,
+        chatId: 606,
+        tgMessageId: 2,
+        fromTgUserId: 1001,
+        fromName: 'Owner',
+        businessConnectionId: 'bc_inbox_1',
+        isFromOwner: true,
+        text: 'Hi Sara!',
+        receivedAt: now + 9500,
+        status: 'replied',
+        expiresAt: now + 86_400_000,
+      },
+    ])
+    .run()
+
+  // In new_only, replied chat 606 is hidden
+  const newOnlyRes = await app.request('/api/inbox?mode=all&chatView=new_only', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const newOnlyBody = (await newOnlyRes.json()) as { items: Array<{ chatId: number }> }
+  assert.equal(newOnlyBody.items.some((i) => i.chatId === 606), false)
+
+  // In with_history, chat 606 is visible with "You: Hi Sara!" preview and unread count 0
+  const historyRes = await app.request('/api/inbox?mode=all&chatView=with_history', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const historyBody = (await historyRes.json()) as {
+    chatView: string
+    items: Array<{ chatId: number; from: string; preview: string; count: number }>
+  }
+  assert.equal(historyBody.chatView, 'with_history')
+  const sara = historyBody.items.find((i) => i.chatId === 606)
+  assert.ok(sara)
+  assert.equal(sara.from, 'Sara')
+  assert.equal(sara.preview, 'You: Hi Sara!')
+  assert.equal(sara.count, 0)
 
   sqlite.close()
 })

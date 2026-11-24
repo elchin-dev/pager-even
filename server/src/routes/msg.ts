@@ -1,4 +1,4 @@
-import { and, eq, lte } from 'drizzle-orm'
+import { and, desc, eq, gt } from 'drizzle-orm'
 import { Api } from 'grammy'
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -14,6 +14,7 @@ import {
 import { logger } from '../lib/logger.js'
 import { toLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
+import { getUserSettings } from './settings.js'
 
 const idParamSchema = z.coerce.number().int().positive()
 
@@ -107,6 +108,53 @@ export function createMsgRouter(options?: {
       }
     })
 
+    const userCfg = getUserSettings(db, authUser.id)
+    const now = Date.now()
+    const threadRows =
+      userCfg.chatView === 'with_history'
+        ? db
+            .select()
+            .from(messages)
+            .where(
+              and(
+                eq(messages.userId, authUser.id),
+                eq(messages.chatId, row.chatId),
+                gt(messages.expiresAt, now),
+              ),
+            )
+            .orderBy(desc(messages.receivedAt), desc(messages.id))
+            .limit(4)
+            .all()
+            .reverse()
+        : db
+            .select()
+            .from(messages)
+            .where(
+              and(
+                eq(messages.userId, authUser.id),
+                eq(messages.chatId, row.chatId),
+                eq(messages.status, 'new'),
+                eq(messages.isFromOwner, false),
+                gt(messages.expiresAt, now),
+              ),
+            )
+            .orderBy(desc(messages.receivedAt), desc(messages.id))
+            .limit(3)
+            .all()
+            .reverse()
+
+    const displayRows = threadRows.length > 0 ? threadRows : [row]
+    const formattedThread = displayRows
+      .map((m) => {
+        if (m.isFromOwner) {
+          return toLens(`You: ${m.text || '[media]'}`, 52)
+        }
+        const mAi = parseAiOrFallback(m.aiJson, { text: m.text, fromName: m.fromName })
+        const urgentPrefix = displayRows.length > 1 && mAi.priority === 'urgent' ? '! ' : ''
+        return `${urgentPrefix}${toLens(m.text || '[media]', displayRows.length > 1 ? 50 : 80)}`
+      })
+      .join('\n')
+
     const originalText = toLens(row.text || '[media]', 80)
 
     return c.json({
@@ -115,7 +163,8 @@ export function createMsgRouter(options?: {
       from: toLens(row.fromName, 20),
       priority: ai.priority === 'urgent' ? 'urgent' : 'needs_reply',
       intent: ai.intent,
-      gist: originalText,
+      chatView: userCfg.chatView,
+      gist: formattedThread || originalText,
       text: toLens(row.text || '[media]', 120),
       drafts,
     })
@@ -203,7 +252,7 @@ export function createMsgRouter(options?: {
             eq(messages.userId, authUser.id),
             eq(messages.chatId, row.chatId),
             eq(messages.status, 'new'),
-            lte(messages.id, row.id),
+            eq(messages.isFromOwner, false),
           ),
         )
         .run()
@@ -211,6 +260,23 @@ export function createMsgRouter(options?: {
       tx.update(messages)
         .set({ status: 'replied' })
         .where(eq(messages.id, row.id))
+        .run()
+
+      tx.insert(messages)
+        .values({
+          userId: authUser.id,
+          chatId: row.chatId,
+          tgMessageId: sent.messageId,
+          fromTgUserId: owner?.tgUserId ?? null,
+          fromName: owner?.tgName || 'You',
+          businessConnectionId: connectionId,
+          isFromOwner: true,
+          text: replyText,
+          receivedAt: now,
+          status: 'replied',
+          expiresAt: now + 48 * 60 * 60 * 1000,
+        })
+        .onConflictDoNothing()
         .run()
 
       tx.insert(actions)
@@ -314,7 +380,7 @@ export function createMsgRouter(options?: {
           eq(messages.userId, authUser.id),
           eq(messages.chatId, row.chatId),
           eq(messages.status, 'new'),
-          lte(messages.id, row.id),
+          eq(messages.isFromOwner, false),
         ),
       )
       .run()

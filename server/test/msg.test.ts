@@ -116,6 +116,24 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
   const updated = db.select().from(messages).where(eq(messages.id, 10)).get()
   assert.equal(updated?.status, 'replied')
 
+  // In with_history mode, GET /api/msg/10 includes both incoming message and "You: ..." reply
+  await app.request('/api/settings', {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ chatView: 'with_history' }),
+  })
+  const historyCardRes = await app.request('/api/msg/10', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  assert.equal(historyCardRes.status, 200)
+  const historyCard = (await historyCardRes.json()) as { chatView: string; gist: string }
+  assert.equal(historyCard.chatView, 'with_history')
+  assert.match(historyCard.gist, /Privet! Prishli KP do 17:00/)
+  assert.match(historyCard.gist, /You: Da, prishlyu do 17:00/)
+
   const actionRows = db.select().from(actions).all()
   assert.equal(actionRows.length, 1)
   assert.equal(actionRows[0]?.type, 'reply')
