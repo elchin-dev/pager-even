@@ -2,12 +2,13 @@ import { randomBytes } from 'node:crypto'
 import { and, eq, gt, isNull } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { getDb, type AppDb } from '../db/index.js'
-import { googleAccounts, linkTokens } from '../db/schema.js'
+import { googleAccounts, linkTokens, users } from '../db/schema.js'
 import { encryptSecret, sha256Hex } from '../lib/crypto.js'
 import {
   buildGoogleAuthUrl,
   exchangeCodeForTokens,
   fetchGoogleUserEmail,
+  fetchPrimaryCalendarTimeZone,
 } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
 
@@ -20,6 +21,7 @@ export interface GoogleAuthRouterOptions {
   publicBaseUrl?: string
   exchangeCode?: typeof exchangeCodeForTokens
   fetchEmail?: typeof fetchGoogleUserEmail
+  fetchTimeZone?: typeof fetchPrimaryCalendarTimeZone
 }
 
 function resolvePublicBaseUrl(explicit?: string): string {
@@ -159,6 +161,7 @@ export function createGoogleAuthRouter(options?: GoogleAuthRouterOptions): Hono 
 
     const exchangeFn = options?.exchangeCode ?? exchangeCodeForTokens
     const fetchEmailFn = options?.fetchEmail ?? fetchGoogleUserEmail
+    const fetchTzFn = options?.fetchTimeZone ?? fetchPrimaryCalendarTimeZone
 
     let tokens: { accessToken: string; refreshToken: string | null; scope: string }
     try {
@@ -217,7 +220,17 @@ export function createGoogleAuthRouter(options?: GoogleAuthRouterOptions): Hono 
       )
     }
 
-    const email = await fetchEmailFn(tokens.accessToken)
+    const [email, calTz] = await Promise.all([
+      fetchEmailFn(tokens.accessToken),
+      fetchTzFn(tokens.accessToken),
+    ])
+
+    if (calTz) {
+      db.update(users)
+        .set({ tz: calTz })
+        .where(eq(users.id, stateEntry.userId))
+        .run()
+    }
 
     db.insert(googleAccounts)
       .values({

@@ -121,6 +121,15 @@ export async function refreshGoogleAccessToken(params: {
   return data.access_token
 }
 
+export function resolveUserTimeZone(storedTz?: string | null): string {
+  const trimmed = storedTz?.trim()
+  if (trimmed && trimmed !== 'UTC') {
+    return trimmed
+  }
+  const envTz = process.env.DEFAULT_TZ?.trim()
+  return envTz && !envTz.startsWith('<') ? envTz : 'Asia/Tashkent'
+}
+
 export async function fetchGoogleUserEmail(
   accessToken: string,
   fetchImpl: typeof fetch = fetch,
@@ -132,6 +141,26 @@ export async function fetchGoogleUserEmail(
     if (!res.ok) return null
     const data = (await res.json()) as { email?: string }
     return data.email ?? null
+  } catch {
+    return null
+  }
+}
+
+export async function fetchPrimaryCalendarTimeZone(
+  accessToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  try {
+    const res = await fetchImpl(
+      'https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=1',
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(3000),
+      },
+    )
+    if (!res.ok) return null
+    const data = (await res.json()) as { timeZone?: string }
+    return data.timeZone?.trim() || null
   } catch {
     return null
   }
@@ -306,15 +335,16 @@ export function computeFreeSlots(params: {
   const startDay = getTzParts(nowMs, tz)
   const slots: CalendarSlot[] = []
 
-  // Round up to the next hour from nowMs and scan up to `days * 24` hours
-  const firstHourMs = Math.ceil(nowMs / 3_600_000) * 3_600_000
-  const totalHours = days * 24
+  // Step in 30-minute increments so half-hour timezones (e.g. +05:30) also hit local hour boundaries
+  const firstStepMs = Math.ceil(nowMs / 1_800_000) * 1_800_000
+  const totalSteps = days * 48
 
-  for (let h = 0; h < totalHours && slots.length < limit; h++) {
-    const candidateStartMs = firstHourMs + h * 3_600_000
+  for (let s = 0; s < totalSteps && slots.length < limit; s++) {
+    const candidateStartMs = firstStepMs + s * 1_800_000
     if (candidateStartMs < minStartMs) continue
 
     const local = getTzParts(candidateStartMs, tz)
+    if (local.minute !== 0) continue
     if (local.hour < workStartHour || local.hour >= workEndHour) continue
 
     const candidateEndMs = candidateStartMs + slotMinutes * 60_000

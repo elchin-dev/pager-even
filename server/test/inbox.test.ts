@@ -472,5 +472,61 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
   assert.equal(overrideBody.mode, 'urgent')
   assert.equal(overrideBody.items.length, 2)
 
+  // Multi-message chat: urgent older msg + non-urgent newer msg promotes urgent preview/id in All mode
+  db.insert(messages)
+    .values([
+      {
+        userId: 1,
+        chatId: 505,
+        tgMessageId: 1,
+        fromTgUserId: 505,
+        fromName: 'Timur',
+        businessConnectionId: 'bc_inbox_1',
+        text: 'Urgent: send contract now!',
+        receivedAt: now + 7000,
+        status: 'new',
+        aiJson: JSON.stringify({
+          priority: 'urgent',
+          intent: 'reply',
+          gist: 'Send contract',
+          lang: 'en',
+          drafts: [{ text: 'Sending', lens: 'Sending', slot: null }],
+        }),
+        expiresAt: now + 86_400_000,
+      },
+      {
+        userId: 1,
+        chatId: 505,
+        tgMessageId: 2,
+        fromTgUserId: 505,
+        fromName: 'Timur',
+        businessConnectionId: 'bc_inbox_1',
+        text: 'btw ok',
+        receivedAt: now + 8000,
+        status: 'new',
+        aiJson: JSON.stringify({
+          priority: 'fyi',
+          intent: 'info',
+          gist: 'Ok',
+          lang: 'en',
+          drafts: [],
+        }),
+        expiresAt: now + 86_400_000,
+      },
+    ])
+    .run()
+
+  const multiAllRes = await app.request('/api/inbox?mode=all', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const multiAllBody = (await multiAllRes.json()) as {
+    items: Array<{ chatId: number; preview: string; count: number; urgent: boolean }>
+  }
+  const timur = multiAllBody.items.find((i) => i.chatId === 505)
+  assert.ok(timur)
+  assert.equal(timur.count, 2)
+  assert.equal(timur.urgent, true)
+  assert.equal(timur.preview, 'Urgent: send contract now!')
+
   sqlite.close()
 })

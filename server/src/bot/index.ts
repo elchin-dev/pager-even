@@ -10,6 +10,7 @@ import { publishUserEvent } from '../lib/events.js'
 import {
   computeFreeSlots,
   createDefaultGoogleCalendarClient,
+  resolveUserTimeZone,
   type CalendarSlot,
   type GoogleCalendarClient,
 } from '../lib/google-calendar.js'
@@ -82,6 +83,7 @@ function upsertTgUser(db: AppDb, tgUser: User) {
     .values({
       tgUserId: tgUser.id,
       tgName,
+      tz: resolveUserTimeZone(),
       createdAt: Date.now(),
     })
     .onConflictDoUpdate({
@@ -107,6 +109,7 @@ function upsertBusinessConnection(db: AppDb, conn: BusinessConnection) {
       canReply,
       isEnabled: conn.is_enabled,
       businessRightsJson: rightsJson,
+      tz: resolveUserTimeZone(),
       createdAt: now,
     })
     .onConflictDoUpdate({
@@ -419,6 +422,7 @@ export function createBot(
         .all()
         .reverse()
 
+      const userTz = resolveUserTimeZone(owner.tz)
       let freeSlots: CalendarSlot[] = []
       const googleAcc = db
         .select()
@@ -437,7 +441,7 @@ export function createBot(
           freeSlots = computeFreeSlots({
             busyIntervals,
             nowMs: now,
-            tz: owner.tz,
+            tz: userTz,
           })
         } catch (err) {
           logger.warn('google_calendar_slots_failed', {
@@ -452,7 +456,7 @@ export function createBot(
           fromName: formatDisplayName(msg.from),
           text: messageText,
           recentMessages: recentRows.slice(0, -1),
-          tz: owner.tz,
+          tz: userTz,
           nowMs: now,
           freeSlots,
         },

@@ -93,7 +93,7 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
   assert.equal(card.id, 10)
   assert.equal(card.from, 'Aziz Karimov')
   assert.equal(card.priority, 'urgent')
-  assert.equal(card.gist, 'Asks for KP by 17:00')
+  assert.equal(card.gist, 'Privet! Prishli KP do 17:00')
   assert.equal(card.drafts.length, 3)
   assert.equal(card.drafts[0]?.lens, 'Da, prishlyu do 17:00')
 

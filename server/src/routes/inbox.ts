@@ -100,6 +100,10 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
       if (existingAll) {
         existingAll.count += 1
         if (isUrgentRow) {
+          if (!existingAll.urgent) {
+            existingAll.id = row.id
+            existingAll.preview = toLens(row.text || '[media]', 40)
+          }
           existingAll.urgent = true
           if (priority === 'urgent') {
             existingAll.priority = 'urgent'

@@ -158,4 +158,16 @@ test('triageMessage normalizes gist <= 40 and draft.lens <= 32, and falls back w
   assert.equal(scheduleFallback.result.drafts[0]?.slot, '2026-11-25T10:00:00.000Z')
   assert.equal(scheduleFallback.result.drafts[1]?.slot, '2026-11-25T11:00:00.000Z')
   assert.equal(scheduleFallback.result.drafts[2]?.slot, null)
+
+  const urgentFallback = await triageMessage(
+    {
+      fromName: 'Boss',
+      text: 'Срочно оплатите счёт сегодня!!',
+      recentMessages: [],
+      tz: 'Asia/Tashkent',
+    },
+    null,
+  )
+  assert.equal(urgentFallback.usedFallback, true)
+  assert.equal(urgentFallback.result.priority, 'urgent')
 })

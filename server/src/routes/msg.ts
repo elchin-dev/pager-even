@@ -8,6 +8,7 @@ import { actions, googleAccounts, messages, users } from '../db/schema.js'
 import { decryptSecret } from '../lib/crypto.js'
 import {
   createDefaultGoogleCalendarClient,
+  resolveUserTimeZone,
   type GoogleCalendarClient,
 } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
@@ -106,13 +107,15 @@ export function createMsgRouter(options?: {
       }
     })
 
+    const originalText = toLens(row.text || '[media]', 80)
+
     return c.json({
       id: row.id,
       chatId: row.chatId,
       from: toLens(row.fromName, 20),
       priority: ai.priority === 'urgent' ? 'urgent' : 'needs_reply',
       intent: ai.intent,
-      gist: toLens(ai.gist || row.text || '[media]', 80),
+      gist: originalText,
       text: toLens(row.text || '[media]', 120),
       drafts,
     })
@@ -243,7 +246,7 @@ export function createMsgRouter(options?: {
             summary,
             startIso,
             endIso,
-            timeZone: owner?.tz || 'UTC',
+            timeZone: resolveUserTimeZone(owner?.tz),
           })
           eventCreated = true
           eventId = created.eventId

@@ -44,7 +44,7 @@ Analyze the incoming Telegram private message (with recent chat context) and ret
 
 Rules:
 - priority:
-  - "urgent": time-sensitive request, deadline today/now, waiting for immediate answer, call/meeting happening soon.
+  - "urgent": ANY time-sensitive or high-importance message (not only meetings/calls!): deadlines today/now, "ASAP/срочно/тез/горит", urgent payment/money/access issues, problems blocking work, waiting for an immediate answer, or calls/meetings happening soon. Do NOT reserve "urgent" only for scheduling — evaluate importance immediately from content.
   - "needs_reply": direct question, task, or request expecting a response.
   - "fyi": short acknowledgement ("ok", "thanks", "got it", emoji) or status update needing no reply.
   - "ignore": spam, promos, automated bot/channel noise, greetings with no actionable content.
@@ -64,6 +64,9 @@ Rules:
 const SCHEDULE_FALLBACK_RE =
   /\b(meet|meeting|call|schedule|calendar|slot|tomorrow|today|zoom|созвон|встрет\p{L}*|встреч\p{L}*|завтра|сегодня|удобно|время|слот)\b/iu
 
+const URGENT_FALLBACK_RE =
+  /(!{2,}|\b(urgent|asap|immediately|right now|deadline|emergency|sos|срочно|немедленно|прямо сейчас|горит|дедлайн|важно|тезро[кқ]|шошилинч)\b)/iu
+
 export function buildFallbackTriage(input: {
   text: string
   fromName: string
@@ -71,6 +74,8 @@ export function buildFallbackTriage(input: {
 }): TriageResult {
   const isCyrillic = /[а-яёўқғҳ]/i.test(input.text)
   const gist = toLens(input.text || input.fromName || 'New message', 40) || 'New message'
+  const isUrgent = URGENT_FALLBACK_RE.test(input.text)
+  const priority: 'urgent' | 'needs_reply' = isUrgent ? 'urgent' : 'needs_reply'
   const isSchedule = Boolean(
     input.freeSlots && input.freeSlots.length > 0 && SCHEDULE_FALLBACK_RE.test(input.text),
   )
@@ -87,7 +92,7 @@ export function buildFallbackTriage(input: {
         : { text: 'Will check my schedule', lens: 'Check schedule', slot: null },
     )
     return {
-      priority: 'needs_reply',
+      priority,
       intent: 'schedule',
       gist,
       lang: isCyrillic ? 'ru' : 'en',
@@ -108,7 +113,7 @@ export function buildFallbackTriage(input: {
       ]
 
   return {
-    priority: 'needs_reply',
+    priority,
     intent: 'reply',
     gist,
     lang: isCyrillic ? 'ru' : 'en',

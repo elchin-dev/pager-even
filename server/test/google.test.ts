@@ -53,6 +53,19 @@ test('computeFreeSlots skips busy intervals and respects working hours', () => {
   assert.equal(slots[0].label, 'Today 12:00')
   assert.equal(slots[1].label, 'Today 13:00')
   assert.equal(slots[2].label, 'Today 14:00')
+
+  // Verify Asia/Tashkent (UTC+5): 13:10 Tashkent = 08:10 UTC -> Today 14:00 Tashkent = 09:00 UTC
+  const tashkentSlots = computeFreeSlots({
+    busyIntervals: [],
+    nowMs: Date.parse('2026-11-24T08:10:00.000Z'),
+    tz: 'Asia/Tashkent',
+    days: 3,
+    workStartHour: 10,
+    workEndHour: 18,
+    limit: 1,
+  })
+  assert.equal(tashkentSlots[0]?.label, 'Today 14:00')
+  assert.equal(tashkentSlots[0]?.startIso, '2026-11-24T09:00:00.000Z')
 })
 
 test('/google command -> one-time /auth/google/start -> /callback encrypts refresh token', async () => {
@@ -109,6 +122,7 @@ test('/google command -> one-time /auth/google/start -> /callback encrypts refre
           scope: 'https://www.googleapis.com/auth/calendar.events',
         }),
         fetchEmail: async () => 'owner@example.com',
+        fetchTimeZone: async () => 'Asia/Tashkent',
       },
     })
 
