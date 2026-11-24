@@ -5,12 +5,17 @@ import { logger } from './lib/logger.js'
 import { createBearerAuthMiddleware, type AuthEnv } from './middleware/auth.js'
 import { createGoogleAuthRouter, type GoogleAuthRouterOptions } from './routes/auth-google.js'
 import { createInboxRouter } from './routes/inbox.js'
-import { createMsgRouter, type SendTelegramMessageFn } from './routes/msg.js'
+import {
+  createMsgRouter,
+  type SendTelegramMessageFn,
+  type SendTelegramVoiceFn,
+} from './routes/msg.js'
 import { createPairRouter, type PairRouterOptions } from './routes/pair.js'
 import { createSettingsRouter } from './routes/settings.js'
 import { createStreamRouter } from './routes/stream.js'
 import { createTgRouter, type TgRouterOptions } from './routes/tg.js'
 import type { GoogleCalendarClient } from './lib/google-calendar.js'
+import { getCachedFfmpegStatus, type TranscodeWavFn } from './voice/transcode.js'
 
 export interface AppOptions {
   corsOrigins?: string[]
@@ -19,6 +24,8 @@ export interface AppOptions {
   pair?: PairRouterOptions
   googleAuth?: GoogleAuthRouterOptions
   sendTelegramMessage?: SendTelegramMessageFn
+  sendTelegramVoice?: SendTelegramVoiceFn
+  transcodeWav?: TranscodeWavFn
   calendarClient?: GoogleCalendarClient
 }
 
@@ -42,7 +49,8 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
   )
 
   app.get('/health', (c) => {
-    return c.json({ ok: true })
+    const ffmpeg = getCachedFfmpegStatus()
+    return c.json({ ok: true, ...(ffmpeg !== null ? { ffmpeg } : {}) })
   })
 
   app.route('/tg', createTgRouter({ db: options?.db, ...options?.tg }))
@@ -57,6 +65,8 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
     createMsgRouter({
       db: options?.db,
       sendTelegramMessage: options?.sendTelegramMessage,
+      sendTelegramVoice: options?.sendTelegramVoice,
+      transcodeWav: options?.transcodeWav,
       calendarClient: options?.calendarClient,
     }),
   )

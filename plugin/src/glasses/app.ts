@@ -1,4 +1,5 @@
 import {
+  AudioInputSource,
   CreateStartUpPageContainer,
   ListContainerProperty,
   ListItemContainerProperty,
@@ -20,6 +21,7 @@ import {
   getStoredDeviceToken,
   saveDeviceToken,
   sendMessageReply,
+  sendVoiceReply,
   skipMessage,
   startPairing,
   subscribeInboxStream,
@@ -30,6 +32,11 @@ import {
   type InboxItem,
   type MessageCard,
 } from '../lib/api'
+import {
+  VOICE_CONFIG,
+  encodeWavPcm16Mono,
+  formatDurationMmSs,
+} from '../lib/wav'
 import {
   renderPhoneError,
   renderPhoneExpired,
@@ -69,7 +76,14 @@ const SENDING_HEADER_NAME = 'sending-header'
 const SENDING_BODY_ID = 31
 const SENDING_BODY_NAME = 'sending-body'
 
-const SEND_UNDO_SECONDS = 3
+const VOICE_HEADER_ID = 40
+const VOICE_HEADER_NAME = 'voice-header'
+const VOICE_BODY_ID = 41
+const VOICE_BODY_NAME = 'voice-body'
+const VOICE_CONFIRM_LIST_ID = 42
+const VOICE_CONFIRM_LIST_NAME = 'voice-cf-list'
+
+const SEND_UNDO_SECONDS = VOICE_CONFIG.undoWindowSec
 
 const MENU_REFRESH_ID = 1
 const MENU_SKIP_ID = 2
@@ -77,6 +91,7 @@ const MENU_BACK_ID = 3
 const MENU_MODE_ID = 4
 const MENU_CHAT_VIEW_ID = 5
 const MENU_READ_FULL_ID = 6
+const MENU_RECORD_VOICE_ID = 7
 
 type AppScreen =
   | 'pairing'
@@ -87,16 +102,27 @@ type AppScreen =
   | 'card'
   | 'card-full'
   | 'sending'
+  | 'recording'
+  | 'voice-too-short'
+  | 'voice-confirm'
+  | 'voice-sending'
+  | 'voice-error'
 
 function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeList | null {
   if (!envelope) return null
   return envelope.eventType ?? OsEventTypeList.CLICK_EVENT
 }
 
-function buildMenuObject(includeCardActions = false): MenuContainerProperty {
-  const menuItems = [
+function buildMenuObject(includeCardActions = false, includeVoiceToggle = false): MenuContainerProperty {
+  const menuItems: MenuItemProperty[] = []
+  if (includeCardActions || includeVoiceToggle) {
+    menuItems.push(
+      new MenuItemProperty({ itemName: 'Record voice', itemID: MENU_RECORD_VOICE_ID }),
+    )
+  }
+  menuItems.push(
     new MenuItemProperty({ itemName: 'Refresh', itemID: MENU_REFRESH_ID }),
-  ]
+  )
   if (includeCardActions) {
     menuItems.push(
       new MenuItemProperty({ itemName: 'Read full', itemID: MENU_READ_FULL_ID }),
@@ -383,6 +409,100 @@ function buildCardFullPayload(card: MessageCard): {
   return {
     containerTotalNum: 2,
     textObject: [header, body],
+    menuObject: buildMenuObject(true),
+  }
+}
+
+function buildVoiceStatusPayload(
+  headerText: string,
+  bodyText: string,
+  includeVoiceToggle = false,
+): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: VOICE_HEADER_ID,
+    containerName: VOICE_HEADER_NAME,
+    content: headerText.slice(0, 64),
+    isEventCapture: 0,
+  })
+
+  const body = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 46,
+    width: 576,
+    height: 242,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: VOICE_BODY_ID,
+    containerName: VOICE_BODY_NAME,
+    content: bodyText,
+    isEventCapture: 1,
+  })
+
+  return {
+    containerTotalNum: 2,
+    textObject: [header, body],
+    menuObject: buildMenuObject(false, includeVoiceToggle),
+  }
+}
+
+function buildVoiceConfirmPayload(
+  durationSec: number,
+  kind: 'short' | 'long',
+): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  listObject: ListContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: VOICE_HEADER_ID,
+    containerName: VOICE_HEADER_NAME,
+    content: `Voice ${formatDurationMmSs(durationSec)} · ${kind}`,
+    isEventCapture: 0,
+  })
+
+  const list = new ListContainerProperty({
+    xPosition: 0,
+    yPosition: 46,
+    width: 576,
+    height: 242,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: VOICE_CONFIRM_LIST_ID,
+    containerName: VOICE_CONFIRM_LIST_NAME,
+    isEventCapture: 1,
+    itemContainer: new ListItemContainerProperty({
+      itemCount: 2,
+      itemWidth: 560,
+      isItemSelectBorderEn: 1,
+      itemName: ['Send', 'Discard'],
+    }),
+  })
+
+  return {
+    containerTotalNum: 2,
+    textObject: [header],
+    listObject: [list],
     menuObject: buildMenuObject(false),
   }
 }
@@ -457,6 +577,17 @@ export async function startGlassesApp(): Promise<void> {
   let sendCancelled = false
   let isActionInFlight = false
 
+  let preVoiceScreen: 'card' | 'card-full' = 'card'
+  let recordingMode: 'hold' | 'menu' = 'hold'
+  let isRecordingActive = false
+  let holdReleasedEarly = false
+  let recordStartedAt = 0
+  let recordTickTimer: number | null = null
+  let voiceShortDismissTimer: number | null = null
+  let pcmChunks: Uint8Array[] = []
+  let pendingWav: { wavBytes: Uint8Array; durationSec: number } | null = null
+  let voiceConfirmIndex = 0
+
   function stopPolling(): void {
     activePairRunId += 1
     if (pollTimer !== null) {
@@ -487,6 +618,29 @@ export async function startGlassesApp(): Promise<void> {
     }
   }
 
+  function stopVoiceTimers(): void {
+    if (recordTickTimer !== null) {
+      window.clearInterval(recordTickTimer)
+      recordTickTimer = null
+    }
+    if (voiceShortDismissTimer !== null) {
+      window.clearTimeout(voiceShortDismissTimer)
+      voiceShortDismissTimer = null
+    }
+  }
+
+  function resetVoiceState(closeMic = false): void {
+    stopVoiceTimers()
+    if (closeMic || isRecordingActive) {
+      void bridge.audioControl(false)
+    }
+    isRecordingActive = false
+    holdReleasedEarly = false
+    pcmChunks = []
+    pendingWav = null
+    voiceConfirmIndex = 0
+  }
+
   async function updatePairBody(content: string): Promise<void> {
     await bridge.textContainerUpgrade(
       new TextContainerUpgrade({
@@ -500,6 +654,7 @@ export async function startGlassesApp(): Promise<void> {
   async function handleUnauthorized(): Promise<void> {
     stopInboxSync()
     stopSendTimer()
+    resetVoiceState(true)
     inboxItems = []
     selectedIndex = 0
     activeCard = null
@@ -635,6 +790,7 @@ export async function startGlassesApp(): Promise<void> {
 
   async function returnToInbox(): Promise<void> {
     stopSendTimer()
+    resetVoiceState(true)
     activeCard = null
     cardDraftIndex = 0
     screen = 'inbox'
@@ -815,6 +971,261 @@ export async function startGlassesApp(): Promise<void> {
     }
   }
 
+  async function returnToActiveCard(): Promise<void> {
+    if (disposed) return
+    if (!activeCard) {
+      await returnToInbox()
+      return
+    }
+    if (preVoiceScreen === 'card-full') {
+      screen = 'card-full'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildCardFullPayload(activeCard)),
+      )
+    } else {
+      screen = 'card'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildCardPayload(activeCard)),
+      )
+    }
+  }
+
+  function formatRecordingHeader(elapsedSec: number, mode: 'hold' | 'menu'): string {
+    const stopHint = mode === 'hold' ? 'release to stop' : 'tap to stop'
+    return `● REC ${formatDurationMmSs(elapsedSec)} · ${stopHint}`
+  }
+
+  async function executeVoiceSend(): Promise<void> {
+    if (disposed || !activeCard || !pendingWav || isActionInFlight) return
+    isActionInFlight = true
+    const cardId = activeCard.id
+    const wavBytes = pendingWav.wavBytes
+    try {
+      await sendVoiceReply(bridge, cardId, wavBytes)
+      pendingWav = null
+      await returnToInbox()
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        console.warn('[voice] send failed:', err instanceof Error ? err.message : err)
+        if (!disposed) {
+          screen = 'voice-error'
+          await bridge.rebuildPageContainer(
+            new RebuildPageContainer(
+              buildVoiceStatusPayload(
+                'Voice not sent · tap retry',
+                'Tap to retry · 2×tap discard',
+              ),
+            ),
+          )
+        }
+      }
+    } finally {
+      isActionInFlight = false
+    }
+  }
+
+  async function startVoiceCountdown(durationSec: number): Promise<void> {
+    if (disposed || !activeCard || !pendingWav) return
+    stopSendTimer()
+    sendCancelled = false
+    screen = 'voice-sending'
+    let secondsLeft: number = VOICE_CONFIG.undoWindowSec
+
+    const formatVoiceSendingLine = (secLeft: number) =>
+      `Voice ${formatDurationMmSs(durationSec)} · sending in ${secLeft} · 2×tap cancel`
+
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer({
+        containerTotalNum: 2,
+        textObject: [
+          new TextContainerProperty({
+            xPosition: 0,
+            yPosition: 0,
+            width: 576,
+            height: 44,
+            borderWidth: 0,
+            borderColor: 5,
+            paddingLength: 4,
+            containerID: SENDING_HEADER_ID,
+            containerName: SENDING_HEADER_NAME,
+            content: formatVoiceSendingLine(secondsLeft).slice(0, 64),
+            isEventCapture: 0,
+          }),
+          new TextContainerProperty({
+            xPosition: 0,
+            yPosition: 46,
+            width: 576,
+            height: 242,
+            borderWidth: 0,
+            borderColor: 5,
+            paddingLength: 4,
+            containerID: SENDING_BODY_ID,
+            containerName: SENDING_BODY_NAME,
+            content: '2×tap cancel',
+            isEventCapture: 1,
+          }),
+        ],
+        menuObject: buildMenuObject(false),
+      }),
+    )
+
+    if (disposed || sendCancelled || screen !== 'voice-sending') return
+
+    sendTimer = window.setInterval(() => {
+      if (disposed || sendCancelled || screen !== 'voice-sending') {
+        stopSendTimer()
+        return
+      }
+      secondsLeft -= 1
+      if (secondsLeft > 0) {
+        void bridge.textContainerUpgrade(
+          new TextContainerUpgrade({
+            containerID: SENDING_HEADER_ID,
+            containerName: SENDING_HEADER_NAME,
+            content: formatVoiceSendingLine(secondsLeft).slice(0, 64),
+          }),
+        )
+        return
+      }
+      stopSendTimer()
+      void executeVoiceSend()
+    }, 1000)
+  }
+
+  async function cancelVoiceSendCountdown(): Promise<void> {
+    sendCancelled = true
+    stopSendTimer()
+    pendingWav = null
+    await returnToActiveCard()
+  }
+
+  async function discardPendingVoice(): Promise<void> {
+    stopSendTimer()
+    pendingWav = null
+    await returnToActiveCard()
+  }
+
+  async function startVoiceRecording(mode: 'hold' | 'menu'): Promise<void> {
+    if (disposed || !activeCard || isRecordingActive || isActionInFlight) return
+
+    stopSendTimer()
+    stopVoiceTimers()
+    preVoiceScreen = screen === 'card-full' ? 'card-full' : 'card'
+    recordingMode = mode
+    holdReleasedEarly = false
+    pcmChunks = []
+    pendingWav = null
+    isRecordingActive = true
+    recordStartedAt = Date.now()
+    screen = 'recording'
+
+    const micOpened = await bridge.audioControl(true, AudioInputSource.Glasses)
+    if (disposed) {
+      void bridge.audioControl(false)
+      return
+    }
+    if (!micOpened) {
+      isRecordingActive = false
+      screen = 'voice-error'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(
+          buildVoiceStatusPayload('Mic unavailable', '2×tap back'),
+        ),
+      )
+      return
+    }
+
+    if (mode === 'hold' && holdReleasedEarly) {
+      await stopVoiceRecording()
+      return
+    }
+
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildVoiceStatusPayload(
+          formatRecordingHeader(0, mode),
+          mode === 'hold' ? 'Release to finish recording' : 'Tap to finish recording',
+          true,
+        ),
+      ),
+    )
+
+    if (disposed || !isRecordingActive) return
+    if (mode === 'hold' && holdReleasedEarly) {
+      await stopVoiceRecording()
+      return
+    }
+
+    recordTickTimer = window.setInterval(() => {
+      if (disposed || !isRecordingActive || screen !== 'recording') {
+        stopVoiceTimers()
+        return
+      }
+      const elapsedSec = Math.floor((Date.now() - recordStartedAt) / 1000)
+      if (elapsedSec >= VOICE_CONFIG.maxRecordSec) {
+        void stopVoiceRecording()
+        return
+      }
+      void bridge.textContainerUpgrade(
+        new TextContainerUpgrade({
+          containerID: VOICE_HEADER_ID,
+          containerName: VOICE_HEADER_NAME,
+          content: formatRecordingHeader(elapsedSec, recordingMode),
+        }),
+      )
+    }, 1000)
+  }
+
+  async function stopVoiceRecording(): Promise<void> {
+    if (!isRecordingActive) return
+    isRecordingActive = false
+    holdReleasedEarly = false
+    stopVoiceTimers()
+
+    await bridge.audioControl(false)
+    if (disposed || !activeCard) return
+
+    const encoded = encodeWavPcm16Mono(pcmChunks)
+    pcmChunks = []
+    const durationSec = encoded.durationSec
+
+    if (durationSec < VOICE_CONFIG.minDurationSec) {
+      pendingWav = null
+      screen = 'voice-too-short'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildVoiceStatusPayload('Too short', '')),
+      )
+      voiceShortDismissTimer = window.setTimeout(() => {
+        voiceShortDismissTimer = null
+        void returnToActiveCard()
+      }, 1000)
+      return
+    }
+
+    pendingWav = encoded
+    voiceConfirmIndex = 0
+
+    if (durationSec < VOICE_CONFIG.shortConfirmMaxSec) {
+      screen = 'voice-confirm'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildVoiceConfirmPayload(durationSec, 'short')),
+      )
+      return
+    }
+
+    if (durationSec > VOICE_CONFIG.autoSendMaxSec) {
+      screen = 'voice-confirm'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildVoiceConfirmPayload(durationSec, 'long')),
+      )
+      return
+    }
+
+    await startVoiceCountdown(durationSec)
+  }
+
   async function beginPairingFlow(): Promise<void> {
     stopPolling()
     stopInboxSync()
@@ -896,6 +1307,13 @@ export async function startGlassesApp(): Promise<void> {
   }
 
   const unsubscribe = bridge.onEvenHubEvent((event) => {
+    if (event.audioEvent) {
+      if (isRecordingActive && event.audioEvent.audioPcm?.byteLength) {
+        pcmChunks.push(new Uint8Array(event.audioEvent.audioPcm))
+      }
+      return
+    }
+
     const sysType = eventTypeOf(event.sysEvent)
     const textType = eventTypeOf(event.textEvent)
     const listType = eventTypeOf(event.listEvent)
@@ -908,7 +1326,33 @@ export async function startGlassesApp(): Promise<void> {
       stopPolling()
       stopInboxSync()
       stopSendTimer()
+      resetVoiceState(true)
       unsubscribe()
+      return
+    }
+
+    if (
+      sysType === OsEventTypeList.LONG_PRESS_EVENT ||
+      textType === OsEventTypeList.LONG_PRESS_EVENT ||
+      listType === OsEventTypeList.LONG_PRESS_EVENT
+    ) {
+      if ((screen === 'card' || screen === 'card-full') && activeCard) {
+        void startVoiceRecording('hold')
+      }
+      return
+    }
+
+    if (
+      sysType === OsEventTypeList.LONG_PRESS_RELEASE_EVENT ||
+      textType === OsEventTypeList.LONG_PRESS_RELEASE_EVENT ||
+      listType === OsEventTypeList.LONG_PRESS_RELEASE_EVENT
+    ) {
+      if (isRecordingActive && recordingMode === 'hold') {
+        holdReleasedEarly = true
+        if (screen === 'recording') {
+          void stopVoiceRecording()
+        }
+      }
       return
     }
 
@@ -919,6 +1363,19 @@ export async function startGlassesApp(): Promise<void> {
     ) {
       if (screen === 'sending') {
         void cancelSendCountdown()
+        return
+      }
+      if (screen === 'voice-sending') {
+        void cancelVoiceSendCountdown()
+        return
+      }
+      if (screen === 'voice-confirm' || screen === 'voice-error') {
+        void discardPendingVoice()
+        return
+      }
+      if (screen === 'recording') {
+        resetVoiceState(true)
+        void returnToActiveCard()
         return
       }
       if (screen === 'card-full') {
@@ -937,6 +1394,7 @@ export async function startGlassesApp(): Promise<void> {
       stopPolling()
       stopInboxSync()
       stopSendTimer()
+      resetVoiceState(true)
       void bridge.shutDownPageContainer(1)
       return
     }
@@ -944,6 +1402,14 @@ export async function startGlassesApp(): Promise<void> {
     if (event.menuItemClickEvent) {
       const itemId = event.menuItemClickEvent.itemID
       console.log('[menu] clicked:', itemId)
+      if (itemId === MENU_RECORD_VOICE_ID) {
+        if (screen === 'recording') {
+          void stopVoiceRecording()
+        } else if ((screen === 'card' || screen === 'card-full') && activeCard) {
+          void startVoiceRecording('menu')
+        }
+        return
+      }
       if (itemId === MENU_MODE_ID) {
         if (screen === 'inbox' || screen === 'inbox-error' || screen === 'card') {
           void toggleFeedMode()
@@ -955,14 +1421,14 @@ export async function startGlassesApp(): Promise<void> {
       } else if (itemId === MENU_REFRESH_ID) {
         if (screen === 'inbox') {
           scheduleInboxRefresh(true)
-        } else if (screen === 'card' && activeCard) {
+        } else if ((screen === 'card' || screen === 'card-full') && activeCard) {
           void openCard(activeCard.id)
         }
       } else if (itemId === MENU_READ_FULL_ID && screen === 'card') {
         void openCardFull()
-      } else if (itemId === MENU_SKIP_ID && screen === 'card') {
+      } else if (itemId === MENU_SKIP_ID && (screen === 'card' || screen === 'card-full')) {
         void skipActiveCard()
-      } else if (itemId === MENU_BACK_ID && screen === 'card') {
+      } else if (itemId === MENU_BACK_ID && (screen === 'card' || screen === 'card-full')) {
         void returnToInbox()
       }
       return
@@ -973,6 +1439,8 @@ export async function startGlassesApp(): Promise<void> {
         selectedIndex = event.listEvent.currentSelectItemIndex
       } else if (screen === 'card') {
         cardDraftIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'voice-confirm') {
+        voiceConfirmIndex = event.listEvent.currentSelectItemIndex
       }
     }
 
@@ -981,6 +1449,29 @@ export async function startGlassesApp(): Promise<void> {
       sysType === OsEventTypeList.CLICK_EVENT ||
       textType === OsEventTypeList.CLICK_EVENT
     ) {
+      if (screen === 'recording' && recordingMode === 'menu') {
+        void stopVoiceRecording()
+        return
+      }
+
+      if (screen === 'voice-confirm') {
+        const idx = event.listEvent?.currentSelectItemIndex ?? voiceConfirmIndex
+        if (idx === 0) {
+          void executeVoiceSend()
+        } else {
+          void discardPendingVoice()
+        }
+        return
+      }
+
+      if (screen === 'voice-error') {
+        if (pendingWav) {
+          void executeVoiceSend()
+        } else {
+          void returnToActiveCard()
+        }
+        return
+      }
       if (screen === 'pairing-error' || screen === 'pairing-expired') {
         void beginPairingFlow()
         return

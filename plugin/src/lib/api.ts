@@ -193,6 +193,22 @@ export async function skipMessage(
   return parseJson<{ ok: true }>(res)
 }
 
+export async function sendVoiceReply(
+  bridge: EvenAppBridge,
+  id: number,
+  wavBytes: Uint8Array,
+): Promise<{ ok: true; tgMessageId: number; durationSec: number }> {
+  const copy = new Uint8Array(wavBytes.byteLength)
+  copy.set(wavBytes)
+  const blob = new Blob([copy.buffer], { type: 'audio/wav' })
+  const res = await apiFetch(bridge, `/api/msg/${id}/voice`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'audio/wav' },
+    body: blob,
+  })
+  return parseJson<{ ok: true; tgMessageId: number; durationSec: number }>(res)
+}
+
 export function subscribeInboxStream(
   bridge: EvenAppBridge,
   handlers: {

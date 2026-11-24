@@ -126,7 +126,7 @@ export const actions = sqliteTable('actions', {
   messageId: integer('message_id')
     .notNull()
     .references(() => messages.id, { onDelete: 'cascade' }),
-  type: text('type', { enum: ['reply', 'event'] }).notNull(),
+  type: text('type', { enum: ['reply', 'event', 'voice'] }).notNull(),
   payload: text('payload').notNull(),
   createdAt: integer('created_at').notNull(),
 })

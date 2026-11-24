@@ -21,7 +21,10 @@ ENV NODE_ENV=production
 ENV PORT=8787
 ENV DATABASE_PATH=/data/pager.db
 
-RUN mkdir -p /data
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /data
 
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules

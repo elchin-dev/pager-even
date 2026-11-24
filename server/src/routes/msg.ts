@@ -1,5 +1,5 @@
 import { and, desc, eq, gt } from 'drizzle-orm'
-import { Api } from 'grammy'
+import { Api, InputFile } from 'grammy'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { buildFallbackTriage, triageResultSchema, type TriageResult } from '../ai/triage.js'
@@ -14,7 +14,10 @@ import {
 import { logger } from '../lib/logger.js'
 import { toOriginalLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
+import { transcodeWavToOpus, type TranscodeWavFn } from '../voice/transcode.js'
 import { getUserSettings } from './settings.js'
+
+const MAX_VOICE_BYTES = 4 * 1024 * 1024
 
 const idParamSchema = z.coerce.number().int().positive()
 
@@ -62,13 +65,72 @@ function parseAiOrFallback(raw: string | null, fallbackInput: { text: string; fr
   return buildFallbackTriage(fallbackInput)
 }
 
+export type SendTelegramVoiceFn = (params: {
+  chatId: number
+  oggBuffer: Buffer
+  durationSec: number
+  businessConnectionId: string
+}) => Promise<{ messageId: number }>
+
+function createDefaultVoiceSender(): SendTelegramVoiceFn {
+  return async ({ chatId, oggBuffer, durationSec, businessConnectionId }) => {
+    const token = process.env.TELEGRAM_BOT_TOKEN?.trim()
+    if (!token) {
+      throw new Error('TELEGRAM_BOT_TOKEN is not configured')
+    }
+    const api = new Api(token)
+    const sent = await api.sendVoice(chatId, new InputFile(oggBuffer, 'voice.ogg'), {
+      business_connection_id: businessConnectionId,
+      duration: Math.max(1, Math.round(durationSec)),
+    })
+    return { messageId: sent.message_id }
+  }
+}
+
+async function readBoundedBody(req: Request, maxBytes: number): Promise<Buffer | 'too_large'> {
+  const contentLengthHeader = req.headers.get('content-length')
+  if (contentLengthHeader) {
+    const contentLength = Number(contentLengthHeader)
+    if (!Number.isNaN(contentLength) && contentLength > maxBytes) {
+      return 'too_large'
+    }
+  }
+
+  if (!req.body) {
+    return Buffer.alloc(0)
+  }
+
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) {
+      total += value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel()
+        return 'too_large'
+      }
+      chunks.push(value)
+    }
+  }
+
+  return Buffer.concat(chunks)
+}
+
 export function createMsgRouter(options?: {
   db?: AppDb
   sendTelegramMessage?: SendTelegramMessageFn
+  sendTelegramVoice?: SendTelegramVoiceFn
+  transcodeWav?: TranscodeWavFn
   calendarClient?: GoogleCalendarClient
 }): Hono<AuthEnv> {
   const router = new Hono<AuthEnv>()
   const sendTelegram = options?.sendTelegramMessage ?? createDefaultSender()
+  const sendVoice = options?.sendTelegramVoice ?? createDefaultVoiceSender()
+  const transcodeWav = options?.transcodeWav ?? transcodeWavToOpus
   const calendarClient = options?.calendarClient ?? createDefaultGoogleCalendarClient()
 
   router.get('/:id', (c) => {
@@ -326,6 +388,110 @@ export function createMsgRouter(options?: {
     })
 
     return c.json({ ok: true })
+  })
+
+  router.post('/:id/voice', async (c) => {
+    const parsedId = idParamSchema.safeParse(c.req.param('id'))
+    if (!parsedId.success) {
+      return c.json({ error: 'invalid_message_id' }, 400)
+    }
+
+    const authUser = c.get('authUser')
+    const db = options?.db ?? getDb()
+
+    const row = db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.id, parsedId.data), eq(messages.userId, authUser.id)))
+      .get()
+
+    if (!row) {
+      return c.json({ error: 'not_found' }, 404)
+    }
+
+    const owner = db.select().from(users).where(eq(users.id, authUser.id)).get()
+    const connectionId = row.businessConnectionId || owner?.businessConnectionId
+    if (!connectionId) {
+      return c.json({ error: 'no_business_connection' }, 400)
+    }
+
+    const bodyResult = await readBoundedBody(c.req.raw, MAX_VOICE_BYTES)
+    if (bodyResult === 'too_large') {
+      return c.json({ error: 'payload_too_large' }, 413)
+    }
+    if (bodyResult.length <= 44) {
+      return c.json({ error: 'invalid_wav' }, 400)
+    }
+
+    let oggBuffer: Buffer
+    let durationSec: number
+    let sent: { messageId: number }
+    try {
+      const transcoded = await transcodeWav(bodyResult)
+      oggBuffer = transcoded.oggBuffer
+      durationSec = transcoded.durationSec
+      sent = await sendVoice({
+        chatId: row.chatId,
+        oggBuffer,
+        durationSec,
+        businessConnectionId: connectionId,
+      })
+    } catch (err) {
+      logger.error('msg_voice_failed', {
+        userId: authUser.id,
+        messageId: row.id,
+        chatId: row.chatId,
+        errorName: err instanceof Error ? err.name : 'unknown',
+        reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown',
+      })
+      return c.json({ error: 'voice_failed' }, 502)
+    }
+
+    const now = Date.now()
+    db.transaction((tx) => {
+      tx.update(messages)
+        .set({ status: 'seen' })
+        .where(
+          and(
+            eq(messages.userId, authUser.id),
+            eq(messages.chatId, row.chatId),
+            eq(messages.status, 'new'),
+            eq(messages.isFromOwner, false),
+          ),
+        )
+        .run()
+
+      tx.update(messages)
+        .set({ status: 'replied' })
+        .where(eq(messages.id, row.id))
+        .run()
+
+      tx.insert(actions)
+        .values({
+          messageId: row.id,
+          type: 'voice',
+          payload: JSON.stringify({
+            tgMessageId: sent.messageId,
+            durationSec,
+          }),
+          createdAt: now,
+        })
+        .run()
+    })
+
+    logger.info('msg_voice_replied', {
+      userId: authUser.id,
+      messageId: row.id,
+      chatId: row.chatId,
+      replyTgMessageId: sent.messageId,
+      durationSec,
+    })
+
+    return c.json({
+      ok: true,
+      tgMessageId: sent.messageId,
+      durationSec,
+    })
   })
 
   return router
