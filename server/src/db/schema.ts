@@ -112,6 +112,7 @@ export const messages = sqliteTable(
       .notNull()
       .default('new'),
     aiJson: text('ai_json'),
+    mediaJson: text('media_json'),
     expiresAt: integer('expires_at').notNull(),
   },
   (table) => [

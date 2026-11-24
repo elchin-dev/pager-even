@@ -2,7 +2,7 @@ import { and, desc, eq, gt, isNull } from 'drizzle-orm'
 import { Api, Bot, type BotConfig, type Context } from 'grammy'
 import type { BusinessConnection, Update, User } from 'grammy/types'
 import { getProviderForUser, type LlmProvider } from '../ai/provider.js'
-import { triageMessage } from '../ai/triage.js'
+import { buildMediaFallbackTriage, triageMessage, type MessageMedia } from '../ai/triage.js'
 import { getDb, type AppDb } from '../db/index.js'
 import { aiSettings, devices, googleAccounts, linkTokens, messages, pairCodes, users } from '../db/schema.js'
 import { decryptSecret, generateLinkToken, sha256Hex } from '../lib/crypto.js'
@@ -15,6 +15,10 @@ import {
   type GoogleCalendarClient,
 } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
+import { transcodeMediaToWav16k, type TranscodeMediaToWavFn } from '../voice/transcode.js'
+
+const MAX_INCOMING_MEDIA_BYTES = 20 * 1024 * 1024
+const MAX_INCOMING_MEDIA_DURATION_SEC = 5 * 60
 
 export const ALLOWED_WEBHOOK_UPDATES: ReadonlyArray<Exclude<keyof Update, 'update_id'>> = [
   'message',
@@ -197,13 +201,46 @@ export function createBot(
     botConfig?: BotConfig<Context>
     getProvider?: (userId: number) => LlmProvider | null
     calendarClient?: GoogleCalendarClient
+    downloadTelegramFile?: (fileId: string) => Promise<Buffer>
+    transcodeMediaToWav?: TranscodeMediaToWavFn
   },
 ): Bot {
   const db = options?.db ?? getDb()
   const resolveProvider =
     options?.getProvider ?? ((userId: number) => getProviderForUser(userId, { db }))
   const calendarClient = options?.calendarClient ?? createDefaultGoogleCalendarClient()
+  const transcodeMedia = options?.transcodeMediaToWav ?? transcodeMediaToWav16k
   const bot = new Bot(token, options?.botConfig)
+
+  const downloadFile =
+    options?.downloadTelegramFile ??
+    (async (fileId: string): Promise<Buffer> => {
+      const file = await bot.api.getFile(fileId)
+      if (!file.file_path) {
+        throw new Error('telegram_file_path_missing')
+      }
+      const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`
+      const res = await fetch(url, { signal: AbortSignal.timeout(20_000) })
+      if (!res.ok || !res.body) {
+        throw new Error(`telegram_file_download_http_${res.status}`)
+      }
+      const reader = res.body.getReader()
+      const chunks: Uint8Array[] = []
+      let total = 0
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) {
+          total += value.byteLength
+          if (total > MAX_INCOMING_MEDIA_BYTES) {
+            await reader.cancel()
+            throw new Error('telegram_file_too_large')
+          }
+          chunks.push(value)
+        }
+      }
+      return Buffer.concat(chunks)
+    })
 
   async function resolveBotUsername(ctx: Context): Promise<string> {
     if (ctx.me?.username) {
@@ -378,6 +415,215 @@ export function createBot(
     const now = Date.now()
     const receivedAt = msg.date ? msg.date * 1000 : now
     const expiresAt = now + MESSAGE_TTL_MS
+    const fromDisplayName = formatDisplayName(msg.from)
+
+    const rawMedia: {
+      kind: MessageMedia['kind']
+      fileId: string
+      duration: number
+      fileSize: number
+    } | null = msg.voice
+      ? {
+          kind: 'voice',
+          fileId: msg.voice.file_id,
+          duration: msg.voice.duration ?? 0,
+          fileSize: msg.voice.file_size ?? 0,
+        }
+      : msg.video_note
+        ? {
+            kind: 'video_note',
+            fileId: msg.video_note.file_id,
+            duration: msg.video_note.duration ?? 0,
+            fileSize: msg.video_note.file_size ?? 0,
+          }
+        : msg.audio
+          ? {
+              kind: 'audio',
+              fileId: msg.audio.file_id,
+              duration: msg.audio.duration ?? 0,
+              fileSize: msg.audio.file_size ?? 0,
+            }
+          : null
+
+    if (rawMedia) {
+      const isTooLong =
+        rawMedia.fileSize > MAX_INCOMING_MEDIA_BYTES ||
+        rawMedia.duration > MAX_INCOMING_MEDIA_DURATION_SEC
+
+      const initialMedia: MessageMedia = isTooLong
+        ? { kind: rawMedia.kind, duration: rawMedia.duration, tooLong: true }
+        : { kind: rawMedia.kind, duration: rawMedia.duration }
+
+      const insertResult = db
+        .insert(messages)
+        .values({
+          userId: owner.id,
+          chatId: msg.chat.id,
+          tgMessageId: msg.message_id,
+          fromTgUserId: msg.from.id,
+          fromName: fromDisplayName,
+          businessConnectionId: connectionId,
+          text: '',
+          mediaJson: JSON.stringify(initialMedia),
+          receivedAt,
+          status: 'new',
+          expiresAt,
+        })
+        .onConflictDoNothing()
+        .run()
+
+      const isDuplicate = insertResult.changes === 0
+
+      logger.info('business_media_received', {
+        updateId: ctx.update.update_id,
+        userId: owner.id,
+        chatId: msg.chat.id,
+        tgMessageId: msg.message_id,
+        kind: rawMedia.kind,
+        duration: rawMedia.duration,
+        status: isDuplicate ? 'duplicate' : isTooLong ? 'too_long' : 'queued',
+      })
+
+      if (isDuplicate) {
+        return
+      }
+
+      const insertedId = Number(insertResult.lastInsertRowid)
+      const ownerId = owner.id
+      const ownerTz = resolveUserTimeZone(owner.tz)
+      const chatId = msg.chat.id
+      const updateId = ctx.update.update_id
+
+      if (isTooLong) {
+        const fallbackTriage = buildMediaFallbackTriage(initialMedia)
+        db.update(messages)
+          .set({
+            aiJson: JSON.stringify(fallbackTriage),
+            mediaJson: JSON.stringify(initialMedia),
+          })
+          .where(eq(messages.id, insertedId))
+          .run()
+
+        publishUserEvent(ownerId, {
+          type: 'inbox',
+          messageId: insertedId,
+          chatId,
+        })
+        return
+      }
+
+      void (async () => {
+        try {
+          const mediaBytes = await downloadFile(rawMedia.fileId)
+          if (mediaBytes.byteLength > MAX_INCOMING_MEDIA_BYTES) {
+            throw new Error('telegram_file_too_large')
+          }
+
+          const wavBuffer = await transcodeMedia(mediaBytes)
+          const provider = resolveProvider(ownerId)
+          if (!provider?.transcribeAudio) {
+            throw new Error('transcribe_provider_unavailable')
+          }
+
+          const { transcript } = await provider.transcribeAudio(wavBuffer, 'audio/wav')
+          const cleanedTranscript = transcript.trim()
+          if (!cleanedTranscript) {
+            throw new Error('empty_transcript')
+          }
+
+          const transcribedMedia: MessageMedia = {
+            kind: rawMedia.kind,
+            duration: rawMedia.duration,
+            transcribed: true,
+          }
+
+          const recentRows = db
+            .select({
+              fromName: messages.fromName,
+              text: messages.text,
+              receivedAt: messages.receivedAt,
+            })
+            .from(messages)
+            .where(and(eq(messages.userId, ownerId), eq(messages.chatId, chatId)))
+            .orderBy(desc(messages.receivedAt), desc(messages.id))
+            .limit(5)
+            .all()
+            .reverse()
+
+          const { result: triage, usedFallback, providerId } = await triageMessage(
+            {
+              fromName: fromDisplayName,
+              text: cleanedTranscript,
+              recentMessages: recentRows.filter((_, idx) => idx < recentRows.length - 1),
+              tz: ownerTz,
+              nowMs: Date.now(),
+            },
+            provider,
+          )
+
+          db.update(messages)
+            .set({
+              text: cleanedTranscript,
+              mediaJson: JSON.stringify(transcribedMedia),
+              aiJson: JSON.stringify(triage),
+            })
+            .where(eq(messages.id, insertedId))
+            .run()
+
+          logger.info('business_media_transcribed', {
+            updateId,
+            userId: ownerId,
+            messageId: insertedId,
+            kind: rawMedia.kind,
+            duration: rawMedia.duration,
+            status: 'transcribed',
+            priority: triage.priority,
+            provider: providerId,
+            usedFallback,
+          })
+
+          publishUserEvent(ownerId, {
+            type: 'inbox',
+            messageId: insertedId,
+            chatId,
+          })
+        } catch (err) {
+          const isOversize =
+            err instanceof Error && err.message === 'telegram_file_too_large'
+          const failedMedia: MessageMedia = isOversize
+            ? { kind: rawMedia.kind, duration: rawMedia.duration, tooLong: true }
+            : { kind: rawMedia.kind, duration: rawMedia.duration, transcribed: false }
+          const fallbackTriage = buildMediaFallbackTriage(failedMedia)
+
+          db.update(messages)
+            .set({
+              text: '',
+              mediaJson: JSON.stringify(failedMedia),
+              aiJson: JSON.stringify(fallbackTriage),
+            })
+            .where(eq(messages.id, insertedId))
+            .run()
+
+          logger.warn('business_media_transcribe_failed', {
+            updateId,
+            userId: ownerId,
+            messageId: insertedId,
+            kind: rawMedia.kind,
+            duration: rawMedia.duration,
+            status: isOversize ? 'too_long' : 'failed',
+          })
+
+          publishUserEvent(ownerId, {
+            type: 'inbox',
+            messageId: insertedId,
+            chatId,
+          })
+        }
+      })()
+
+      return
+    }
+
     const messageText = msg.text ?? msg.caption ?? ''
 
     const insertResult = db
@@ -387,7 +633,7 @@ export function createBot(
         chatId: msg.chat.id,
         tgMessageId: msg.message_id,
         fromTgUserId: msg.from.id,
-        fromName: formatDisplayName(msg.from),
+        fromName: fromDisplayName,
         businessConnectionId: connectionId,
         text: messageText,
         receivedAt,
@@ -426,7 +672,7 @@ export function createBot(
 
       const { result: triage, usedFallback, providerId } = await triageMessage(
         {
-          fromName: formatDisplayName(msg.from),
+          fromName: fromDisplayName,
           text: messageText,
           recentMessages: recentRows.slice(0, -1),
           tz: userTz,

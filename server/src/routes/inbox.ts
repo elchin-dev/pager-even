@@ -1,7 +1,12 @@
 import { and, desc, eq, gt } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { triageResultSchema } from '../ai/triage.js'
+import {
+  formatMediaMmSs,
+  messageMediaSchema,
+  triageResultSchema,
+  type MessageMedia,
+} from '../ai/triage.js'
 import { getDb, type AppDb } from '../db/index.js'
 import { messages } from '../db/schema.js'
 import { logger } from '../lib/logger.js'
@@ -34,6 +39,42 @@ export interface InboxItem {
   priority: 'urgent' | 'needs_reply' | 'fyi' | 'ignore'
   urgent: boolean
   hasConflict: boolean
+  media?: MessageMedia | null
+}
+
+function parseMediaJson(raw: string | null): MessageMedia | null {
+  if (!raw) return null
+  try {
+    const parsed = messageMediaSchema.safeParse(JSON.parse(raw) as unknown)
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
+}
+
+function formatInboxPreviewText(
+  row: { isFromOwner: boolean; text: string },
+  media: MessageMedia | null,
+  ai: InboxAi | null,
+): string {
+  if (row.isFromOwner) {
+    return toOriginalLens(`You: ${row.text || '[media]'}`, 40)
+  }
+  if (!media) {
+    return toOriginalLens(row.text || '[media]', 40)
+  }
+  const prefix =
+    media.kind === 'video_note'
+      ? `(o${formatMediaMmSs(media.duration)})`
+      : `(v${formatMediaMmSs(media.duration)})`
+  if (media.tooLong) {
+    return toOriginalLens(`${prefix} too long`, 40)
+  }
+  if (media.transcribed === false) {
+    return toOriginalLens(`${prefix} couldn't transcribe`, 40)
+  }
+  const summary = (ai?.gist || row.text).trim()
+  return toOriginalLens(summary ? `${prefix} ${summary}` : prefix, 40)
 }
 
 function parseAiJson(raw: string | null): InboxAi | null {
@@ -96,6 +137,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
         status: messages.status,
         text: messages.text,
         aiJson: messages.aiJson,
+        mediaJson: messages.mediaJson,
         receivedAt: messages.receivedAt,
       })
       .from(messages)
@@ -112,6 +154,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
     for (const row of rows) {
       const isUnreadIncoming = !row.isFromOwner && row.status === 'new'
       const ai = row.isFromOwner ? null : parseAiJson(row.aiJson)
+      const media = row.isFromOwner ? null : parseMediaJson(row.mediaJson)
       const priority: InboxItem['priority'] = ai?.priority ?? 'needs_reply'
       const hasConflict = Boolean(ai?.conflict)
       const hasDrafts = Boolean(ai && ai.drafts.length > 0)
@@ -120,9 +163,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
         (priority === 'urgent' || (priority === 'needs_reply' && hasConflict)) &&
         hasDrafts
 
-      const formattedPreview = row.isFromOwner
-        ? toOriginalLens(`You: ${row.text || '[media]'}`, 40)
-        : toOriginalLens(row.text || '[media]', 40)
+      const formattedPreview = formatInboxPreviewText(row, media, ai)
 
       const existingAll = allGrouped.get(row.chatId)
       if (existingAll) {
@@ -159,6 +200,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
           priority,
           urgent: isUrgentRow,
           hasConflict: isUnreadIncoming ? hasConflict : false,
+          ...(media ? { media } : {}),
           receivedAt: row.receivedAt,
           hasIncomingId: !row.isFromOwner,
         })
@@ -184,6 +226,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
             priority,
             urgent: true,
             hasConflict,
+            ...(media ? { media } : {}),
             receivedAt: row.receivedAt,
           })
         }

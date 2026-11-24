@@ -34,6 +34,13 @@ export interface UserSettings {
   conflictAlerts: boolean
 }
 
+export interface MessageMedia {
+  kind: 'voice' | 'video_note' | 'audio'
+  duration: number
+  transcribed?: boolean
+  tooLong?: boolean
+}
+
 export interface InboxItem {
   id: number
   chatId: number
@@ -43,6 +50,7 @@ export interface InboxItem {
   priority?: 'urgent' | 'needs_reply' | 'fyi' | 'ignore'
   urgent?: boolean
   hasConflict?: boolean
+  media?: MessageMedia | null
 }
 
 export interface InboxCounts {
@@ -74,6 +82,8 @@ export interface MessageCard {
   fullText?: string
   hasMore?: boolean
   text: string
+  media?: MessageMedia
+  transcript?: string
   drafts: MessageDraft[]
 }
 

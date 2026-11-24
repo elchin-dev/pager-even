@@ -159,3 +159,86 @@ export const transcodeWavToOpus: TranscodeWavFn = async (wavBuffer: Buffer) => {
     child.stdin?.end(wavBuffer)
   })
 }
+
+export type TranscodeMediaToWavFn = (mediaBuffer: Buffer) => Promise<Buffer>
+
+export const transcodeMediaToWav16k: TranscodeMediaToWavFn = async (mediaBuffer: Buffer) => {
+  if (mediaBuffer.length === 0) {
+    throw new Error('empty_media_buffer')
+  }
+
+  return new Promise<Buffer>((resolve, reject) => {
+    let settled = false
+    const stdoutChunks: Buffer[] = []
+
+    const fail = (err: Error) => {
+      if (settled) return
+      settled = true
+      reject(err)
+    }
+
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(
+        'ffmpeg',
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-i',
+          'pipe:0',
+          '-vn',
+          '-ac',
+          '1',
+          '-ar',
+          '16000',
+          '-acodec',
+          'pcm_s16le',
+          '-f',
+          'wav',
+          'pipe:1',
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] },
+      )
+    } catch (err) {
+      fail(err instanceof Error ? err : new Error('ffmpeg_spawn_failed'))
+      return
+    }
+
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      fail(new Error('ffmpeg_media_timeout'))
+    }, 20_000)
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdoutChunks.push(chunk)
+    })
+
+    child.stdin?.on('error', () => {
+      // Handled by close/error if ffmpeg exits early
+    })
+
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      fail(err)
+    })
+
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (settled) return
+      if (code !== 0) {
+        fail(new Error(`ffmpeg_media_exit_${code ?? 'signal'}`))
+        return
+      }
+      const wavOut = Buffer.concat(stdoutChunks)
+      if (wavOut.length <= 44) {
+        fail(new Error('ffmpeg_media_empty_wav'))
+        return
+      }
+      settled = true
+      resolve(wavOut)
+    })
+
+    child.stdin?.end(mediaBuffer)
+  })
+}

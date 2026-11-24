@@ -37,6 +37,7 @@ import {
   encodeWavPcm16Mono,
   formatDurationMmSs,
 } from '../lib/wav'
+import { paginateLensText } from '../lib/paginate'
 import {
   renderPhoneError,
   renderPhoneExpired,
@@ -70,6 +71,10 @@ const CARD_FULL_HEADER_ID = 23
 const CARD_FULL_HEADER_NAME = 'card-full-hdr'
 const CARD_FULL_BODY_ID = 24
 const CARD_FULL_BODY_NAME = 'card-full-body'
+const TRANSCRIPT_HEADER_ID = 25
+const TRANSCRIPT_HEADER_NAME = 'tr-header'
+const TRANSCRIPT_BODY_ID = 26
+const TRANSCRIPT_BODY_NAME = 'tr-body'
 
 const SENDING_HEADER_ID = 30
 const SENDING_HEADER_NAME = 'sending-header'
@@ -101,6 +106,7 @@ type AppScreen =
   | 'inbox-error'
   | 'card'
   | 'card-full'
+  | 'transcript-pages'
   | 'sending'
   | 'recording'
   | 'voice-too-short'
@@ -125,7 +131,7 @@ function buildMenuObject(includeCardActions = false, includeVoiceToggle = false)
   )
   if (includeCardActions) {
     menuItems.push(
-      new MenuItemProperty({ itemName: 'Read full', itemID: MENU_READ_FULL_ID }),
+      new MenuItemProperty({ itemName: 'Full text', itemID: MENU_READ_FULL_ID }),
       new MenuItemProperty({ itemName: 'Skip', itemID: MENU_SKIP_ID }),
       new MenuItemProperty({ itemName: 'Back', itemID: MENU_BACK_ID }),
     )
@@ -308,13 +314,83 @@ function buildInboxPayload(
   }
 }
 
+function formatCardHeaderText(card: MessageCard): string {
+  const prefix = card.priority === 'urgent' ? '! ' : ''
+  if (card.media) {
+    const mediaLabel = card.media.kind === 'video_note' ? 'video' : 'voice'
+    return clampUtf8(
+      `${prefix}${card.from} · ${mediaLabel} ${formatDurationMmSs(card.media.duration)}`,
+      64,
+    )
+  }
+  return clampUtf8(`${prefix}${card.from}  [${card.intent}]`, 64)
+}
+
+function formatTranscriptPageHeader(
+  card: MessageCard,
+  pageIndex: number,
+  totalPages: number,
+): string {
+  if (card.media) {
+    const label = card.media.kind === 'video_note' ? 'Video' : 'Voice'
+    return clampUtf8(
+      `${label} ${formatDurationMmSs(card.media.duration)} · ${pageIndex + 1}/${totalPages}`,
+      64,
+    )
+  }
+  return clampUtf8(`${card.from} · ${pageIndex + 1}/${totalPages}`, 64)
+}
+
+function buildTranscriptPagePayload(
+  card: MessageCard,
+  pages: string[],
+  pageIndex: number,
+): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: TRANSCRIPT_HEADER_ID,
+    containerName: TRANSCRIPT_HEADER_NAME,
+    content: formatTranscriptPageHeader(card, pageIndex, pages.length),
+    isEventCapture: 0,
+  })
+
+  const body = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 46,
+    width: 576,
+    height: 242,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: TRANSCRIPT_BODY_ID,
+    containerName: TRANSCRIPT_BODY_NAME,
+    content: pages[pageIndex] ?? '',
+    isEventCapture: 1,
+  })
+
+  return {
+    containerTotalNum: 2,
+    textObject: [header, body],
+    menuObject: buildMenuObject(true),
+  }
+}
+
 function buildCardPayload(card: MessageCard): {
   containerTotalNum: number
   textObject: TextContainerProperty[]
   listObject: ListContainerProperty[]
   menuObject: MenuContainerProperty
 } {
-  const prefix = card.priority === 'urgent' ? '! ' : ''
   const header = new TextContainerProperty({
     xPosition: 0,
     yPosition: 0,
@@ -325,7 +401,7 @@ function buildCardPayload(card: MessageCard): {
     paddingLength: 4,
     containerID: CARD_HEADER_ID,
     containerName: CARD_HEADER_NAME,
-    content: `${prefix}${card.from}  [${card.intent}]`.slice(0, 64),
+    content: formatCardHeaderText(card),
     isEventCapture: 0,
   })
 
@@ -573,6 +649,8 @@ export async function startGlassesApp(): Promise<void> {
 
   let activeCard: MessageCard | null = null
   let cardDraftIndex = 0
+  let transcriptPages: string[] = []
+  let transcriptPageIndex = 0
   let sendTimer: number | null = null
   let sendCancelled = false
   let isActionInFlight = false
@@ -843,10 +921,19 @@ export async function startGlassesApp(): Promise<void> {
       if (disposed) return
       activeCard = card
       cardDraftIndex = 0
-      screen = 'card-full'
-      await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildCardFullPayload(card)),
-      )
+      transcriptPages = []
+      transcriptPageIndex = 0
+      if (card.media) {
+        screen = 'card'
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildCardPayload(card)),
+        )
+      } else {
+        screen = 'card-full'
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildCardFullPayload(card)),
+        )
+      }
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         await handleUnauthorized()
@@ -864,6 +951,40 @@ export async function startGlassesApp(): Promise<void> {
     screen = 'card-full'
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(buildCardFullPayload(activeCard)),
+    )
+  }
+
+  async function openTranscriptPages(): Promise<void> {
+    if (disposed || !activeCard) return
+    const raw = activeCard.transcript || activeCard.gist
+    transcriptPages = paginateLensText(raw, 180)
+    transcriptPageIndex = 0
+    screen = 'transcript-pages'
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildTranscriptPagePayload(activeCard, transcriptPages, transcriptPageIndex),
+      ),
+    )
+  }
+
+  async function stepTranscriptPage(delta: -1 | 1): Promise<void> {
+    if (disposed || !activeCard || screen !== 'transcript-pages') return
+    const nextIdx = transcriptPageIndex + delta
+    if (nextIdx < 0 || nextIdx >= transcriptPages.length) return
+    transcriptPageIndex = nextIdx
+    await bridge.textContainerUpgrade(
+      new TextContainerUpgrade({
+        containerID: TRANSCRIPT_HEADER_ID,
+        containerName: TRANSCRIPT_HEADER_NAME,
+        content: formatTranscriptPageHeader(activeCard, transcriptPageIndex, transcriptPages.length),
+      }),
+    )
+    await bridge.textContainerUpgrade(
+      new TextContainerUpgrade({
+        containerID: TRANSCRIPT_BODY_ID,
+        containerName: TRANSCRIPT_BODY_NAME,
+        content: transcriptPages[transcriptPageIndex] ?? '',
+      }),
     )
   }
 
@@ -1378,12 +1499,16 @@ export async function startGlassesApp(): Promise<void> {
         void returnToActiveCard()
         return
       }
+      if (screen === 'transcript-pages') {
+        void backFromCardFull()
+        return
+      }
       if (screen === 'card-full') {
         void returnToInbox()
         return
       }
       if (screen === 'card') {
-        if (activeCard) {
+        if (activeCard && !activeCard.media) {
           void openCardFull()
         } else {
           void returnToInbox()
@@ -1421,17 +1546,50 @@ export async function startGlassesApp(): Promise<void> {
       } else if (itemId === MENU_REFRESH_ID) {
         if (screen === 'inbox') {
           scheduleInboxRefresh(true)
-        } else if ((screen === 'card' || screen === 'card-full') && activeCard) {
+        } else if (
+          (screen === 'card' || screen === 'card-full' || screen === 'transcript-pages') &&
+          activeCard
+        ) {
           void openCard(activeCard.id)
         }
-      } else if (itemId === MENU_READ_FULL_ID && screen === 'card') {
-        void openCardFull()
-      } else if (itemId === MENU_SKIP_ID && (screen === 'card' || screen === 'card-full')) {
+      } else if (itemId === MENU_READ_FULL_ID && (screen === 'card' || screen === 'card-full')) {
+        if (activeCard?.media) {
+          void openTranscriptPages()
+        } else {
+          void openCardFull()
+        }
+      } else if (
+        itemId === MENU_SKIP_ID &&
+        (screen === 'card' || screen === 'card-full' || screen === 'transcript-pages')
+      ) {
         void skipActiveCard()
-      } else if (itemId === MENU_BACK_ID && (screen === 'card' || screen === 'card-full')) {
-        void returnToInbox()
+      } else if (itemId === MENU_BACK_ID) {
+        if (screen === 'transcript-pages') {
+          void backFromCardFull()
+        } else if (screen === 'card' || screen === 'card-full') {
+          void returnToInbox()
+        }
       }
       return
+    }
+
+    if (screen === 'transcript-pages') {
+      if (
+        textType === OsEventTypeList.SCROLL_BOTTOM_EVENT ||
+        sysType === OsEventTypeList.SCROLL_BOTTOM_EVENT ||
+        listType === OsEventTypeList.SCROLL_BOTTOM_EVENT
+      ) {
+        void stepTranscriptPage(1)
+        return
+      }
+      if (
+        textType === OsEventTypeList.SCROLL_TOP_EVENT ||
+        sysType === OsEventTypeList.SCROLL_TOP_EVENT ||
+        listType === OsEventTypeList.SCROLL_TOP_EVENT
+      ) {
+        void stepTranscriptPage(-1)
+        return
+      }
     }
 
     if (event.listEvent?.currentSelectItemIndex !== undefined) {

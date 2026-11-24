@@ -4,6 +4,46 @@ import { logger } from '../lib/logger.js'
 import { toOriginalLens } from '../lib/translit.js'
 import type { LlmProvider } from './provider.js'
 
+export const messageMediaSchema = z.object({
+  kind: z.enum(['voice', 'video_note', 'audio']),
+  duration: z.number().nonnegative(),
+  transcribed: z.boolean().optional(),
+  tooLong: z.boolean().optional(),
+})
+
+export type MessageMedia = z.infer<typeof messageMediaSchema>
+
+export function formatMediaMmSs(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const mins = Math.floor(total / 60)
+  const secs = total % 60
+  return `${mins}:${String(secs).padStart(2, '0')}`
+}
+
+export function buildMediaFallbackTriage(media: {
+  kind: 'voice' | 'video_note' | 'audio'
+  duration: number
+  tooLong?: boolean
+}): TriageResult {
+  const label = media.kind === 'video_note' ? 'Video' : 'Voice'
+  const dur = formatMediaMmSs(media.duration)
+  const gist = media.tooLong
+    ? `${label} ${dur} · too long to transcribe`
+    : `${label} ${dur} · couldn't transcribe`
+
+  return {
+    priority: 'needs_reply',
+    intent: 'reply',
+    gist: gist.slice(0, 120),
+    lang: 'en',
+    drafts: [
+      { text: 'Will listen and reply', lens: 'Will listen and reply', slot: null },
+      { text: 'Can you text it briefly?', lens: 'Can you text it briefly?', slot: null },
+      { text: 'In a meeting, will check soon', lens: 'In a meeting, check soon', slot: null },
+    ],
+  }
+}
+
 export const triageDraftSchema = z.object({
   text: z.string().min(1).max(1000),
   lens: z.string().min(1).max(64),
@@ -52,7 +92,7 @@ Rules:
   - "schedule": asking to meet, call, or find a free time slot.
   - "info": pure info/no action needed.
   - "reply": normal reply needed.
-- gist: concise English/ASCII action summary <= 40 chars (e.g. "Asks for KP by 17:00").
+- gist: concise action summary <= 40 chars in the sender's original language/script (e.g. "Move call to 17?" or "Перенести созвон на 17?").
 - lang: primary ISO 639-1 language code of the sender's message (e.g. "en", "ru", "uz").
 - drafts:
   - If priority is "urgent" or "needs_reply", provide 3 distinct, natural, context-specific replies in the sender's language ("text") that directly answer what the sender asked (avoid generic filler like "Yes, sounds good" or "Will reply shortly" unless truly appropriate):

@@ -2,7 +2,15 @@ import { and, desc, eq, gt } from 'drizzle-orm'
 import { Api, InputFile } from 'grammy'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { buildFallbackTriage, triageResultSchema, type TriageResult } from '../ai/triage.js'
+import {
+  buildFallbackTriage,
+  buildMediaFallbackTriage,
+  formatMediaMmSs,
+  messageMediaSchema,
+  triageResultSchema,
+  type MessageMedia,
+  type TriageResult,
+} from '../ai/triage.js'
 import { getDb, type AppDb } from '../db/index.js'
 import { actions, googleAccounts, messages, users } from '../db/schema.js'
 import { decryptSecret } from '../lib/crypto.js'
@@ -51,7 +59,20 @@ function createDefaultSender(): SendTelegramMessageFn {
   }
 }
 
-function parseAiOrFallback(raw: string | null, fallbackInput: { text: string; fromName: string }): TriageResult {
+function parseMediaJson(raw: string | null): MessageMedia | null {
+  if (!raw) return null
+  try {
+    const parsed = messageMediaSchema.safeParse(JSON.parse(raw) as unknown)
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
+}
+
+function parseAiOrFallback(
+  raw: string | null,
+  fallbackInput: { text: string; fromName: string; media?: MessageMedia | null },
+): TriageResult {
   if (raw) {
     try {
       const parsed = triageResultSchema.safeParse(JSON.parse(raw) as unknown)
@@ -61,6 +82,9 @@ function parseAiOrFallback(raw: string | null, fallbackInput: { text: string; fr
     } catch {
       // ignore invalid stored JSON
     }
+  }
+  if (fallbackInput.media && fallbackInput.media.transcribed !== true) {
+    return buildMediaFallbackTriage(fallbackInput.media)
   }
   return buildFallbackTriage(fallbackInput)
 }
@@ -152,9 +176,11 @@ export function createMsgRouter(options?: {
       return c.json({ error: 'not_found' }, 404)
     }
 
+    const media = parseMediaJson(row.mediaJson)
     const ai = parseAiOrFallback(row.aiJson, {
       text: row.text,
       fromName: row.fromName,
+      media,
     })
 
     const drafts = ai.drafts.slice(0, 3).map((d, index) => ({
@@ -187,13 +213,42 @@ export function createMsgRouter(options?: {
         if (m.isFromOwner) {
           return `You: ${toOriginalLens(m.text || '[media]', 220)}`
         }
+        const mMedia = parseMediaJson(m.mediaJson)
         const sender = toOriginalLens(m.fromName || row.fromName, 20) || 'Chat'
+        if (mMedia) {
+          const prefix =
+            mMedia.kind === 'video_note'
+              ? `(o${formatMediaMmSs(mMedia.duration)})`
+              : `(v${formatMediaMmSs(mMedia.duration)})`
+          const body = mMedia.tooLong
+            ? 'too long to transcribe'
+            : mMedia.transcribed === false
+              ? "couldn't transcribe"
+              : toOriginalLens(m.text || '', 220)
+          return `${sender}: ${prefix} ${body}`.trim()
+        }
         return `${sender}: ${toOriginalLens(m.text || '[media]', 220)}`
       })
       .join('\n')
       .slice(0, 900)
 
-    const compactGist = toOriginalLens(row.text || '[media]', 72)
+    let compactGist: string
+    if (media) {
+      const label = media.kind === 'video_note' ? 'Video' : 'Voice'
+      const dur = formatMediaMmSs(media.duration)
+      if (media.tooLong) {
+        compactGist = `${label} ${dur} · too long to transcribe`
+      } else if (media.transcribed === false) {
+        compactGist = `${label} ${dur} · couldn't transcribe`
+      } else {
+        compactGist = toOriginalLens(ai.gist || row.text || `${label} ${dur}`, 72)
+      }
+    } else {
+      compactGist = toOriginalLens(row.text || '[media]', 72)
+    }
+
+    const transcript =
+      media && media.transcribed ? toOriginalLens(row.text || '', 2000) : undefined
 
     return c.json({
       id: row.id,
@@ -206,6 +261,8 @@ export function createMsgRouter(options?: {
       fullText: fullText || compactGist,
       hasMore: true,
       text: toOriginalLens(row.text || '[media]', 120),
+      ...(media ? { media } : {}),
+      ...(transcript ? { transcript } : {}),
       drafts,
     })
   })
@@ -253,6 +310,7 @@ export function createMsgRouter(options?: {
       const ai = parseAiOrFallback(row.aiJson, {
         text: row.text,
         fromName: row.fromName,
+        media: parseMediaJson(row.mediaJson),
       })
       const draft = ai.drafts[parsedBody.data.draftIndex]
       if (!draft) {
