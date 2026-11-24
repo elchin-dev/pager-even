@@ -1,9 +1,7 @@
-import { eq } from 'drizzle-orm'
 import type { ZodType } from 'zod'
-import { getDb, type AppDb } from '../db/index.js'
-import { aiSettings } from '../db/schema.js'
+import type { AppDb } from '../db/index.js'
 
-export type ProviderId = 'anthropic' | 'gemini' | 'openai' | 'openrouter'
+export type ProviderId = 'gemini'
 
 export interface CompleteJsonOptions<T> {
   system: string
@@ -20,8 +18,7 @@ export interface LlmProvider {
 
 export type FetchLike = typeof fetch
 
-const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-5-5'
-const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-haiku-5.5'
+const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest'
 const DEFAULT_TIMEOUT_MS = 10_000
 
 function extractJsonText(raw: string): string {
@@ -38,13 +35,12 @@ function extractJsonText(raw: string): string {
   return trimmed
 }
 
-function resolveDefaultModel(provider: ProviderId, envModel?: string): string {
+function resolveDefaultModel(envModel?: string): string {
   const cleaned = envModel?.trim()
   if (cleaned && !cleaned.startsWith('<')) {
     return cleaned
   }
-  if (provider === 'openrouter') return DEFAULT_OPENROUTER_MODEL
-  return DEFAULT_ANTHROPIC_MODEL
+  return DEFAULT_GEMINI_MODEL
 }
 
 async function runWithJsonRetry<T>(
@@ -72,104 +68,65 @@ async function runWithJsonRetry<T>(
   throw lastError instanceof Error ? lastError : new Error('llm_invalid_json')
 }
 
-export function createAnthropicProvider(config: {
+export function createGeminiProvider(config: {
   apiKey: string
   model?: string
   fetchImpl?: FetchLike
   timeoutMs?: number
 }): LlmProvider {
-  const model = resolveDefaultModel('anthropic', config.model)
+  const model = resolveDefaultModel(config.model)
   const fetchImpl = config.fetchImpl ?? fetch
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   return {
-    id: 'anthropic',
+    id: 'gemini',
     model,
     async completeJson<T>(opts: CompleteJsonOptions<T>): Promise<T> {
       return runWithJsonRetry(async (userPrompt) => {
-        const res = await fetchImpl('https://api.anthropic.com/v1/messages', {
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
+        const res = await fetchImpl(endpoint, {
           method: 'POST',
           headers: {
-            'x-api-key': config.apiKey,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
+            'x-goog-api-key': config.apiKey,
+            'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model,
-            max_tokens: opts.maxTokens ?? 600,
-            temperature: 0.2,
-            system: opts.system,
-            messages: [{ role: 'user', content: userPrompt }],
+            systemInstruction: {
+              parts: [{ text: opts.system }],
+            },
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: userPrompt }],
+              },
+            ],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.2,
+              maxOutputTokens: opts.maxTokens ?? 600,
+            },
           }),
           signal: AbortSignal.timeout(timeoutMs),
         })
 
         if (!res.ok) {
-          throw new Error(`anthropic_http_${res.status}`)
+          throw new Error(`gemini_http_${res.status}`)
         }
 
         const data = (await res.json()) as {
-          content?: Array<{ type?: string; text?: string }>
+          candidates?: Array<{
+            content?: {
+              parts?: Array<{ text?: string }>
+            }
+          }>
         }
-        const text = (data.content ?? [])
-          .filter((block) => block.type === 'text' && typeof block.text === 'string')
-          .map((block) => block.text ?? '')
+
+        const text = (data.candidates?.[0]?.content?.parts ?? [])
+          .map((part) => part.text ?? '')
           .join('')
 
         if (!text) {
-          throw new Error('anthropic_empty_response')
-        }
-        return text
-      }, opts)
-    },
-  }
-}
-
-export function createOpenRouterProvider(config: {
-  apiKey: string
-  model?: string
-  fetchImpl?: FetchLike
-  timeoutMs?: number
-}): LlmProvider {
-  const model = resolveDefaultModel('openrouter', config.model)
-  const fetchImpl = config.fetchImpl ?? fetch
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
-
-  return {
-    id: 'openrouter',
-    model,
-    async completeJson<T>(opts: CompleteJsonOptions<T>): Promise<T> {
-      return runWithJsonRetry(async (userPrompt) => {
-        const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${config.apiKey}`,
-            'Content-Type': 'application/json',
-            'X-Title': 'Pager G2',
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: opts.maxTokens ?? 600,
-            temperature: 0.2,
-            response_format: { type: 'json_object' },
-            messages: [
-              { role: 'system', content: opts.system },
-              { role: 'user', content: userPrompt },
-            ],
-          }),
-          signal: AbortSignal.timeout(timeoutMs),
-        })
-
-        if (!res.ok) {
-          throw new Error(`openrouter_http_${res.status}`)
-        }
-
-        const data = (await res.json()) as {
-          choices?: Array<{ message?: { content?: string | null } }>
-        }
-        const text = data.choices?.[0]?.message?.content ?? ''
-        if (!text) {
-          throw new Error('openrouter_empty_response')
+          throw new Error('gemini_empty_response')
         }
         return text
       }, opts)
@@ -178,45 +135,20 @@ export function createOpenRouterProvider(config: {
 }
 
 export function getServerDefaultProvider(fetchImpl?: FetchLike): LlmProvider | null {
-  const requested = process.env.AI_DEFAULT_PROVIDER?.trim().toLowerCase()
-  const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim()
-  const openrouterKey = process.env.OPENROUTER_API_KEY?.trim()
-  const envModel = process.env.AI_DEFAULT_MODEL
-
-  if (requested === 'openrouter') {
-    if (openrouterKey) {
-      return createOpenRouterProvider({ apiKey: openrouterKey, model: envModel, fetchImpl })
-    }
-    if (anthropicKey) {
-      return createAnthropicProvider({ apiKey: anthropicKey, model: envModel, fetchImpl })
-    }
+  const geminiKey = process.env.GEMINI_API_KEY?.trim()
+  if (!geminiKey) {
     return null
   }
-
-  if (requested === 'anthropic' || !requested) {
-    if (anthropicKey) {
-      return createAnthropicProvider({ apiKey: anthropicKey, model: envModel, fetchImpl })
-    }
-    if (openrouterKey) {
-      const orModel = envModel?.includes('/') ? envModel : undefined
-      return createOpenRouterProvider({ apiKey: openrouterKey, model: orModel, fetchImpl })
-    }
-  }
-
-  return null
+  return createGeminiProvider({
+    apiKey: geminiKey,
+    model: process.env.AI_DEFAULT_MODEL,
+    fetchImpl,
+  })
 }
 
 export function getProviderForUser(
-  userId: number,
+  _userId: number,
   options?: { db?: AppDb; fetchImpl?: FetchLike },
 ): LlmProvider | null {
-  const db = options?.db ?? getDb()
-  const settings = db.select().from(aiSettings).where(eq(aiSettings.userId, userId)).get()
-
-  if (settings && settings.mode === 'byok' && settings.keyEnc) {
-    // BYOK key decryption will be wired with the /settings/ai flow; fall back to server provider until then.
-    return getServerDefaultProvider(options?.fetchImpl)
-  }
-
   return getServerDefaultProvider(options?.fetchImpl)
 }

@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { z } from 'zod'
-import {
-  createAnthropicProvider,
-  createOpenRouterProvider,
-  type LlmProvider,
-} from '../src/ai/provider.js'
+import { createGeminiProvider, type LlmProvider } from '../src/ai/provider.js'
 import { triageMessage } from '../src/ai/triage.js'
 
 const sampleSchema = z.object({
@@ -13,17 +9,26 @@ const sampleSchema = z.object({
   note: z.string(),
 })
 
-test('createAnthropicProvider sends expected headers/body and retries once on invalid JSON', async () => {
+test('createGeminiProvider sends expected headers/body and retries once on invalid JSON', async () => {
   let calls = 0
-  const provider = createAnthropicProvider({
-    apiKey: 'test-anthropic-key',
-    model: 'claude-3-5-haiku-latest',
+  const provider = createGeminiProvider({
+    apiKey: 'test-gemini-key',
+    model: 'gemini-flash-latest',
     fetchImpl: async (url, init) => {
       calls += 1
-      assert.equal(url, 'https://api.anthropic.com/v1/messages')
+      assert.equal(
+        url,
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent',
+      )
       const headers = init?.headers as Record<string, string>
-      assert.equal(headers['x-api-key'], 'test-anthropic-key')
-      assert.equal(headers['anthropic-version'], '2023-06-01')
+      assert.equal(headers['x-goog-api-key'], 'test-gemini-key')
+
+      const body = JSON.parse(String(init?.body)) as {
+        systemInstruction?: { parts?: Array<{ text?: string }> }
+        generationConfig?: { responseMimeType?: string }
+      }
+      assert.equal(body.systemInstruction?.parts?.[0]?.text, 'sys')
+      assert.equal(body.generationConfig?.responseMimeType, 'application/json')
 
       const text =
         calls === 1
@@ -32,7 +37,7 @@ test('createAnthropicProvider sends expected headers/body and retries once on in
 
       return new Response(
         JSON.stringify({
-          content: [{ type: 'text', text }],
+          candidates: [{ content: { parts: [{ text }] } }],
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       )
@@ -49,25 +54,16 @@ test('createAnthropicProvider sends expected headers/body and retries once on in
   assert.deepEqual(result, { ok: true, note: 'retried' })
 })
 
-test('createOpenRouterProvider sends Bearer auth + json_object and fails after 2 bad responses', async () => {
+test('createGeminiProvider fails after 2 invalid schema responses', async () => {
   let calls = 0
-  const provider = createOpenRouterProvider({
-    apiKey: 'test-openrouter-key',
-    model: 'anthropic/claude-3.5-haiku',
-    fetchImpl: async (url, init) => {
+  const provider = createGeminiProvider({
+    apiKey: 'test-gemini-key',
+    model: 'gemini-flash-latest',
+    fetchImpl: async () => {
       calls += 1
-      assert.equal(url, 'https://openrouter.ai/api/v1/chat/completions')
-      const headers = init?.headers as Record<string, string>
-      assert.equal(headers.Authorization, 'Bearer test-openrouter-key')
-
-      const body = JSON.parse(String(init?.body)) as {
-        response_format?: { type?: string }
-      }
-      assert.equal(body.response_format?.type, 'json_object')
-
       return new Response(
         JSON.stringify({
-          choices: [{ message: { content: '{"wrongField": 123}' } }],
+          candidates: [{ content: { parts: [{ text: '{"wrongField": 123}' }] } }],
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       )
@@ -86,7 +82,7 @@ test('createOpenRouterProvider sends Bearer auth + json_object and fails after 2
 
 test('triageMessage normalizes gist <= 40 and draft.lens <= 32, and falls back when provider fails or is null', async () => {
   const mockProvider: LlmProvider = {
-    id: 'anthropic',
+    id: 'gemini',
     model: 'mock',
     async completeJson() {
       return {
