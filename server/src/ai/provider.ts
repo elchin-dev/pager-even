@@ -20,8 +20,8 @@ export interface LlmProvider {
 
 export type FetchLike = typeof fetch
 
-const DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-haiku-latest'
-const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-3.5-haiku'
+const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-5-5'
+const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-haiku-5.5'
 const DEFAULT_TIMEOUT_MS = 10_000
 
 function extractJsonText(raw: string): string {
@@ -187,6 +187,9 @@ export function getServerDefaultProvider(fetchImpl?: FetchLike): LlmProvider | n
     if (openrouterKey) {
       return createOpenRouterProvider({ apiKey: openrouterKey, model: envModel, fetchImpl })
     }
+    if (anthropicKey) {
+      return createAnthropicProvider({ apiKey: anthropicKey, model: envModel, fetchImpl })
+    }
     return null
   }
 
@@ -194,8 +197,9 @@ export function getServerDefaultProvider(fetchImpl?: FetchLike): LlmProvider | n
     if (anthropicKey) {
       return createAnthropicProvider({ apiKey: anthropicKey, model: envModel, fetchImpl })
     }
-    if (!requested && openrouterKey) {
-      return createOpenRouterProvider({ apiKey: openrouterKey, model: envModel, fetchImpl })
+    if (openrouterKey) {
+      const orModel = envModel?.includes('/') ? envModel : undefined
+      return createOpenRouterProvider({ apiKey: openrouterKey, model: orModel, fetchImpl })
     }
   }
 

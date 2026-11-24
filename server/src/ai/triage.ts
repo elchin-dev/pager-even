@@ -154,6 +154,7 @@ export async function triageMessage(
     logger.warn('triage_llm_failed_using_fallback', {
       provider: provider.id,
       errorName: err instanceof Error ? err.name : 'unknown',
+      reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown',
     })
     return {
       result: buildFallbackTriage(input),
