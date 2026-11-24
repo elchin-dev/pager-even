@@ -111,8 +111,13 @@ function buildMenuObject(includeCardActions = false): MenuContainerProperty {
 
 function formatInboxListLine(item: InboxItem, mode: FeedMode): string {
   const isUrgent = Boolean(item.urgent || item.priority === 'urgent')
-  const prefix = mode === 'all' && isUrgent ? '! ' : ''
-  return `${prefix}${item.from}  ${item.preview}`.slice(0, 64)
+  const raw = `${item.from}  ${item.preview}`
+  if (mode === 'all' && isUrgent) {
+    const trimmed = raw.length > 40 ? `${raw.slice(0, 39)}…` : raw
+    const pad = ' '.repeat(Math.max(2, 42 - trimmed.length))
+    return `${trimmed}${pad}!`.slice(0, 64)
+  }
+  return raw.slice(0, 64)
 }
 
 function buildPairingTextContainers(bodyContent: string): TextContainerProperty[] {
@@ -315,7 +320,7 @@ function buildCardFullPayload(card: MessageCard): {
     paddingLength: 4,
     containerID: CARD_FULL_HEADER_ID,
     containerName: CARD_FULL_HEADER_NAME,
-    content: `${prefix}${card.from} · full (tap back)`.slice(0, 64),
+    content: `${prefix}${card.from} · tap: replies · 2x: back`.slice(0, 64),
     isEventCapture: 0,
   })
 
@@ -633,10 +638,20 @@ export async function startGlassesApp(): Promise<void> {
       if (disposed) return
       activeCard = card
       cardDraftIndex = 0
-      screen = 'card'
-      await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildCardPayload(card)),
+      const shouldStartFull = Boolean(
+        card.hasMore || (card.fullText && card.fullText !== card.gist),
       )
+      if (shouldStartFull) {
+        screen = 'card-full'
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildCardFullPayload(card)),
+        )
+      } else {
+        screen = 'card'
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildCardPayload(card)),
+        )
+      }
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         await handleUnauthorized()
@@ -868,11 +883,15 @@ export async function startGlassesApp(): Promise<void> {
         return
       }
       if (screen === 'card-full') {
-        void backFromCardFull()
+        void returnToInbox()
         return
       }
       if (screen === 'card') {
-        void skipActiveCard()
+        if (activeCard && (activeCard.hasMore || (activeCard.fullText && activeCard.fullText !== activeCard.gist))) {
+          void openCardFull()
+        } else {
+          void skipActiveCard()
+        }
         return
       }
       disposed = true
