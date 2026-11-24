@@ -201,6 +201,7 @@ export function subscribeInboxStream(
   },
 ): () => void {
   let stopped = false
+  let hasConnectedOnce = false
   let activeController: AbortController | null = null
   let reconnectTimer: number | null = null
 
@@ -260,7 +261,12 @@ export function subscribeInboxStream(
             }
           }
 
-          if (eventName === 'inbox') {
+          if (eventName === 'ready') {
+            if (hasConnectedOnce) {
+              handlers.onInbox()
+            }
+            hasConnectedOnce = true
+          } else if (eventName === 'inbox') {
             handlers.onInbox()
           }
 

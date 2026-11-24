@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { triageResultSchema } from '../ai/triage.js'
 import { getDb, type AppDb } from '../db/index.js'
 import { messages } from '../db/schema.js'
+import { logger } from '../lib/logger.js'
 import { toOriginalLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
 import { getUserSettings, type ChatView, type FeedMode } from './settings.js'
@@ -206,6 +207,12 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
         }
         return rest
       })
+
+    logger.info('inbox_fetched', {
+      userId: authUser.id,
+      count: items.length,
+      urgent: urgentGrouped.size,
+    })
 
     return c.json({
       mode: rawMode === 'urgent' ? 'urgent' : 'all',

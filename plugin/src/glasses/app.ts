@@ -395,6 +395,7 @@ export async function startGlassesApp(): Promise<void> {
   let selectedIndex = 0
   let lastInboxRebuildAt = 0
   let pendingInboxTimer: number | null = null
+  let fallbackPollTimer: number | null = null
   let isRefreshingInbox = false
   let stopSse: (() => void) | null = null
 
@@ -416,6 +417,10 @@ export async function startGlassesApp(): Promise<void> {
     if (pendingInboxTimer !== null) {
       window.clearTimeout(pendingInboxTimer)
       pendingInboxTimer = null
+    }
+    if (fallbackPollTimer !== null) {
+      window.clearInterval(fallbackPollTimer)
+      fallbackPollTimer = null
     }
     if (stopSse) {
       stopSse()
@@ -540,6 +545,11 @@ export async function startGlassesApp(): Promise<void> {
         void handleUnauthorized()
       },
     })
+    fallbackPollTimer = window.setInterval(() => {
+      if (!disposed && screen === 'inbox') {
+        scheduleInboxRefresh(false)
+      }
+    }, 10_000)
   }
 
   async function enterInbox(isStartup: boolean): Promise<void> {
