@@ -61,9 +61,39 @@ Rules:
   - If intent is "schedule" and "Available calendar slots" are provided, use 2-3 of those exact slots in drafts: set "slot" to the slot's exact ISO start string, and keep "lens" <= 27 chars (e.g. "Tomorrow 15:00 works"). Otherwise set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
 
-export function buildFallbackTriage(input: { text: string; fromName: string }): TriageResult {
+const SCHEDULE_FALLBACK_RE =
+  /\b(meet|meeting|call|schedule|calendar|slot|tomorrow|today|zoom|созвон|встрет\p{L}*|встреч\p{L}*|завтра|сегодня|удобно|время|слот)\b/iu
+
+export function buildFallbackTriage(input: {
+  text: string
+  fromName: string
+  freeSlots?: CalendarSlot[]
+}): TriageResult {
   const isCyrillic = /[а-яёўқғҳ]/i.test(input.text)
   const gist = toLens(input.text || input.fromName || 'New message', 40) || 'New message'
+  const isSchedule = Boolean(
+    input.freeSlots && input.freeSlots.length > 0 && SCHEDULE_FALLBACK_RE.test(input.text),
+  )
+
+  if (isSchedule && input.freeSlots && input.freeSlots.length > 0) {
+    const slotDrafts: TriageDraft[] = input.freeSlots.slice(0, 2).map((s, idx) => ({
+      text: idx === 0 ? `${s.label} works for me` : `How about ${s.label}?`,
+      lens: toLens(idx === 0 ? `${s.label} works` : `${s.label}?`, 27) || s.label,
+      slot: s.startIso,
+    }))
+    slotDrafts.push(
+      isCyrillic
+        ? { text: 'Отвечу чуть позже', lens: 'Otvechu chut pozzhe', slot: null }
+        : { text: 'Will check my schedule', lens: 'Check schedule', slot: null },
+    )
+    return {
+      priority: 'needs_reply',
+      intent: 'schedule',
+      gist,
+      lang: isCyrillic ? 'ru' : 'en',
+      drafts: slotDrafts,
+    }
+  }
 
   const drafts: TriageDraft[] = isCyrillic
     ? [

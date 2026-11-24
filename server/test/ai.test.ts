@@ -131,4 +131,31 @@ test('triageMessage normalizes gist <= 40 and draft.lens <= 32, and falls back w
   assert.equal(fallback.result.priority, 'needs_reply')
   assert.equal(fallback.result.lang, 'ru')
   assert.equal(fallback.result.drafts.length, 3)
+
+  const scheduleFallback = await triageMessage(
+    {
+      fromName: 'Eric',
+      text: 'Can we meet tomorrow?',
+      recentMessages: [],
+      tz: 'UTC',
+      freeSlots: [
+        {
+          startIso: '2026-11-25T10:00:00.000Z',
+          endIso: '2026-11-25T10:30:00.000Z',
+          label: 'Tomorrow 15:00',
+        },
+        {
+          startIso: '2026-11-25T11:00:00.000Z',
+          endIso: '2026-11-25T11:30:00.000Z',
+          label: 'Tomorrow 16:00',
+        },
+      ],
+    },
+    null,
+  )
+  assert.equal(scheduleFallback.usedFallback, true)
+  assert.equal(scheduleFallback.result.intent, 'schedule')
+  assert.equal(scheduleFallback.result.drafts[0]?.slot, '2026-11-25T10:00:00.000Z')
+  assert.equal(scheduleFallback.result.drafts[1]?.slot, '2026-11-25T11:00:00.000Z')
+  assert.equal(scheduleFallback.result.drafts[2]?.slot, null)
 })
