@@ -423,33 +423,6 @@ export function createBot(
         .reverse()
 
       const userTz = resolveUserTimeZone(owner.tz)
-      let freeSlots: CalendarSlot[] = []
-      const googleAcc = db
-        .select()
-        .from(googleAccounts)
-        .where(eq(googleAccounts.userId, owner.id))
-        .get()
-
-      if (googleAcc) {
-        try {
-          const refreshToken = decryptSecret(googleAcc.refreshTokenEnc)
-          const busyIntervals = await calendarClient.listBusyIntervals({
-            refreshToken,
-            timeMinIso: new Date(now).toISOString(),
-            timeMaxIso: new Date(now + 3 * 24 * 60 * 60 * 1000).toISOString(),
-          })
-          freeSlots = computeFreeSlots({
-            busyIntervals,
-            nowMs: now,
-            tz: userTz,
-          })
-        } catch (err) {
-          logger.warn('google_calendar_slots_failed', {
-            userId: owner.id,
-            errorName: err instanceof Error ? err.name : 'unknown',
-          })
-        }
-      }
 
       const { result: triage, usedFallback, providerId } = await triageMessage(
         {
@@ -458,7 +431,6 @@ export function createBot(
           recentMessages: recentRows.slice(0, -1),
           tz: userTz,
           nowMs: now,
-          freeSlots,
         },
         resolveProvider(owner.id),
       )

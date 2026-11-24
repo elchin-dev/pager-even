@@ -95,18 +95,12 @@ export function createMsgRouter(options?: {
       fromName: row.fromName,
     })
 
-    const drafts = ai.drafts.slice(0, 3).map((d, index) => {
-      const slot = d.slot ?? null
-      const hasCal = Boolean(slot)
-      const baseLens = toOriginalLens(d.lens || d.text, hasCal ? 27 : 32) || 'Reply'
-      const lens = hasCal && !baseLens.endsWith('+cal') ? `${baseLens} +cal` : baseLens
-      return {
-        index,
-        lens,
-        slot,
-        hasCal,
-      }
-    })
+    const drafts = ai.drafts.slice(0, 3).map((d, index) => ({
+      index,
+      lens: toOriginalLens(d.lens || d.text, 32) || 'Reply',
+      slot: null,
+      hasCal: false,
+    }))
 
     const userCfg = getUserSettings(db, authUser.id)
     const now = Date.now()
@@ -276,52 +270,8 @@ export function createMsgRouter(options?: {
         .run()
     })
 
-    let eventCreated = false
+    const eventCreated = false
     let eventId: string | undefined
-    if (selectedSlot && parsedBody.data.createEvent !== false) {
-      const googleAcc = db
-        .select()
-        .from(googleAccounts)
-        .where(eq(googleAccounts.userId, authUser.id))
-        .get()
-      const startMs = Date.parse(selectedSlot)
-      if (googleAcc && !Number.isNaN(startMs)) {
-        const startIso = new Date(startMs).toISOString()
-        const endIso = new Date(startMs + 30 * 60_000).toISOString()
-        const summary = `Meeting: ${toOriginalLens(row.fromName, 40) || row.fromName}`
-        try {
-          const refreshToken = decryptSecret(googleAcc.refreshTokenEnc)
-          const created = await calendarClient.createEvent({
-            refreshToken,
-            summary,
-            startIso,
-            endIso,
-            timeZone: resolveUserTimeZone(owner?.tz),
-          })
-          eventCreated = true
-          eventId = created.eventId
-          db.insert(actions)
-            .values({
-              messageId: row.id,
-              type: 'event',
-              payload: JSON.stringify({
-                eventId,
-                startIso,
-                endIso,
-                summary,
-              }),
-              createdAt: Date.now(),
-            })
-            .run()
-        } catch (err) {
-          logger.error('msg_send_calendar_event_failed', {
-            userId: authUser.id,
-            messageId: row.id,
-            errorName: err instanceof Error ? err.name : 'unknown',
-          })
-        }
-      }
-    }
 
     logger.info('msg_replied', {
       userId: authUser.id,

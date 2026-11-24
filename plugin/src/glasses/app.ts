@@ -124,12 +124,47 @@ function clampUtf8(input: string, maxBytes: number): string {
   return out
 }
 
+function visualWidthUnits(input: string): number {
+  let units = 0
+  for (const ch of input) {
+    if (ch === ' ') {
+      units += 1
+    } else if (/[\u0400-\u04ff]/.test(ch)) {
+      units += 2.2
+    } else {
+      units += 1.7
+    }
+  }
+  return units
+}
+
+function clampVisualAndUtf8(input: string, maxUnits: number, maxBytes: number): string {
+  if (visualWidthUnits(input) <= maxUnits && utf8Encoder.encode(input).length <= maxBytes) {
+    return input
+  }
+  let out = ''
+  for (const ch of input) {
+    const next = `${out}${ch}`
+    if (
+      visualWidthUnits(`${next}…`) > maxUnits ||
+      utf8Encoder.encode(`${next}…`).length > maxBytes
+    ) {
+      return `${out}…`
+    }
+    out = next
+  }
+  return out
+}
+
 function formatInboxListLine(item: InboxItem): string {
   const isUrgent = Boolean(item.urgent || item.priority === 'urgent')
   const raw = `${item.from}  ${item.preview}`
   if (isUrgent) {
-    const trimmed = clampUtf8(raw, 56)
-    const padCount = Math.max(2, 38 - trimmed.length)
+    const trimmed = clampVisualAndUtf8(raw, 56, 56)
+    const targetUnits = 62
+    const desiredSpaces = Math.max(2, Math.round(targetUnits - visualWidthUnits(trimmed)))
+    const maxSpacesByBytes = Math.max(1, 63 - utf8Encoder.encode(trimmed).length)
+    const padCount = Math.min(desiredSpaces, maxSpacesByBytes)
     return clampUtf8(`${trimmed}${' '.repeat(padCount)}!`, 64)
   }
   return clampUtf8(raw, 64)

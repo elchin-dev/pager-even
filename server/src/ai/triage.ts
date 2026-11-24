@@ -60,7 +60,7 @@ Rules:
     2) Specific alternative, clarifying question, or counter-offer tailored to the message.
     3) Polite defer/busy response with a realistic timeframe (e.g. "Сейчас на встрече, отвечу через час").
   - For every draft, "lens" must be <= 32 chars in the SAME original language/script as "text" (do NOT transliterate Russian/Cyrillic into Latin; keep Russian in Cyrillic, English in English).
-  - If intent is "schedule" and "Available calendar slots" are provided, use 2-3 of those exact slots in drafts: set "slot" to the slot's exact ISO start string, and keep "lens" <= 27 chars (e.g. "Завтра в 15:00 удобно" or "Tomorrow 15:00 works"). Otherwise set "slot" to null.
+  - Always set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
 
 const SCHEDULE_FALLBACK_RE =

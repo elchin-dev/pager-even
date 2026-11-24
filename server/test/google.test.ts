@@ -183,7 +183,10 @@ test('/google command -> one-time /auth/google/start -> /callback encrypts refre
   }
 })
 
-test('schedule intent includes slots with +cal and POST /api/msg/:id/send creates Calendar event', async () => {
+test(
+  'schedule intent includes slots with +cal and POST /api/msg/:id/send creates Calendar event',
+  { skip: 'Calendar replies temporarily disabled per user request' },
+  async () => {
   const prevKey = process.env.ENCRYPTION_KEY
   process.env.ENCRYPTION_KEY = TEST_ENC_KEY
 
