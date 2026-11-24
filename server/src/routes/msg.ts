@@ -123,7 +123,7 @@ export function createMsgRouter(options?: {
               ),
             )
             .orderBy(desc(messages.receivedAt), desc(messages.id))
-            .limit(4)
+            .limit(8)
             .all()
             .reverse()
         : db
@@ -139,23 +139,29 @@ export function createMsgRouter(options?: {
               ),
             )
             .orderBy(desc(messages.receivedAt), desc(messages.id))
-            .limit(3)
+            .limit(6)
             .all()
             .reverse()
 
     const displayRows = threadRows.length > 0 ? threadRows : [row]
-    const formattedThread = displayRows
+    const fullText = displayRows
       .map((m) => {
         if (m.isFromOwner) {
-          return toLens(`You: ${m.text || '[media]'}`, 52)
+          return `You: ${toLens(m.text || '[media]', 220)}`
         }
         const mAi = parseAiOrFallback(m.aiJson, { text: m.text, fromName: m.fromName })
         const urgentPrefix = displayRows.length > 1 && mAi.priority === 'urgent' ? '! ' : ''
-        return `${urgentPrefix}${toLens(m.text || '[media]', displayRows.length > 1 ? 50 : 80)}`
+        return `${urgentPrefix}${toLens(m.text || '[media]', 220)}`
       })
       .join('\n')
+      .slice(0, 900)
 
-    const originalText = toLens(row.text || '[media]', 80)
+    const compactGist = toLens(row.text || '[media]', 72)
+    const hasMore =
+      fullText.length > compactGist.length ||
+      fullText.includes('\n') ||
+      displayRows.length > 1 ||
+      userCfg.chatView === 'with_history'
 
     return c.json({
       id: row.id,
@@ -164,7 +170,9 @@ export function createMsgRouter(options?: {
       priority: ai.priority === 'urgent' ? 'urgent' : 'needs_reply',
       intent: ai.intent,
       chatView: userCfg.chatView,
-      gist: formattedThread || originalText,
+      gist: compactGist,
+      fullText: fullText || compactGist,
+      hasMore,
       text: toLens(row.text || '[media]', 120),
       drafts,
     })

@@ -71,6 +71,8 @@ export interface MessageCard {
   priority: 'urgent' | 'needs_reply'
   intent: 'reply' | 'schedule' | 'info'
   gist: string
+  fullText?: string
+  hasMore?: boolean
   text: string
   drafts: MessageDraft[]
 }

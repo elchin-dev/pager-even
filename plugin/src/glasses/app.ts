@@ -59,6 +59,10 @@ const CARD_GIST_ID = 21
 const CARD_GIST_NAME = 'card-gist'
 const CARD_DRAFTS_ID = 22
 const CARD_DRAFTS_NAME = 'card-drafts'
+const CARD_FULL_HEADER_ID = 23
+const CARD_FULL_HEADER_NAME = 'card-full-hdr'
+const CARD_FULL_BODY_ID = 24
+const CARD_FULL_BODY_NAME = 'card-full-body'
 
 const SENDING_HEADER_ID = 30
 const SENDING_HEADER_NAME = 'sending-header'
@@ -72,6 +76,7 @@ const MENU_SKIP_ID = 2
 const MENU_BACK_ID = 3
 const MENU_MODE_ID = 4
 const MENU_CHAT_VIEW_ID = 5
+const MENU_READ_FULL_ID = 6
 
 type AppScreen =
   | 'pairing'
@@ -80,6 +85,7 @@ type AppScreen =
   | 'inbox'
   | 'inbox-error'
   | 'card'
+  | 'card-full'
   | 'sending'
 
 function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeList | null {
@@ -95,6 +101,7 @@ function buildMenuObject(includeCardActions = false): MenuContainerProperty {
   ]
   if (includeCardActions) {
     menuItems.push(
+      new MenuItemProperty({ itemName: 'Read full', itemID: MENU_READ_FULL_ID }),
       new MenuItemProperty({ itemName: 'Skip', itemID: MENU_SKIP_ID }),
       new MenuItemProperty({ itemName: 'Back', itemID: MENU_BACK_ID }),
     )
@@ -251,7 +258,7 @@ function buildCardPayload(card: MessageCard): {
     xPosition: 0,
     yPosition: 44,
     width: 576,
-    height: 92,
+    height: 68,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,
@@ -262,11 +269,14 @@ function buildCardPayload(card: MessageCard): {
   })
 
   const draftItems = card.drafts.map((draft) => draft.lens.slice(0, 64))
+  if (card.hasMore || (card.fullText && card.fullText !== card.gist)) {
+    draftItems.push('Read full / History')
+  }
   const drafts = new ListContainerProperty({
     xPosition: 0,
-    yPosition: 138,
+    yPosition: 114,
     width: 576,
-    height: 150,
+    height: 174,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,
@@ -286,6 +296,47 @@ function buildCardPayload(card: MessageCard): {
     textObject: [header, gist],
     listObject: [drafts],
     menuObject: buildMenuObject(true),
+  }
+}
+
+function buildCardFullPayload(card: MessageCard): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const prefix = card.priority === 'urgent' ? '! ' : ''
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: CARD_FULL_HEADER_ID,
+    containerName: CARD_FULL_HEADER_NAME,
+    content: `${prefix}${card.from} · full (tap back)`.slice(0, 64),
+    isEventCapture: 0,
+  })
+
+  const body = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 46,
+    width: 576,
+    height: 242,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: CARD_FULL_BODY_ID,
+    containerName: CARD_FULL_BODY_NAME,
+    content: card.fullText || card.gist,
+    isEventCapture: 1,
+  })
+
+  return {
+    containerTotalNum: 2,
+    textObject: [header, body],
+    menuObject: buildMenuObject(false),
   }
 }
 
@@ -598,6 +649,23 @@ export async function startGlassesApp(): Promise<void> {
     }
   }
 
+  async function openCardFull(): Promise<void> {
+    if (disposed || !activeCard) return
+    screen = 'card-full'
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(buildCardFullPayload(activeCard)),
+    )
+  }
+
+  async function backFromCardFull(): Promise<void> {
+    if (disposed || !activeCard) return
+    screen = 'card'
+    cardDraftIndex = 0
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(buildCardPayload(activeCard)),
+    )
+  }
+
   async function skipActiveCard(): Promise<void> {
     if (disposed || !activeCard || isActionInFlight) return
     isActionInFlight = true
@@ -799,6 +867,10 @@ export async function startGlassesApp(): Promise<void> {
         void cancelSendCountdown()
         return
       }
+      if (screen === 'card-full') {
+        void backFromCardFull()
+        return
+      }
       if (screen === 'card') {
         void skipActiveCard()
         return
@@ -828,6 +900,8 @@ export async function startGlassesApp(): Promise<void> {
         } else if (screen === 'card' && activeCard) {
           void openCard(activeCard.id)
         }
+      } else if (itemId === MENU_READ_FULL_ID && screen === 'card') {
+        void openCardFull()
       } else if (itemId === MENU_SKIP_ID && screen === 'card') {
         void skipActiveCard()
       } else if (itemId === MENU_BACK_ID && screen === 'card') {
@@ -868,9 +942,18 @@ export async function startGlassesApp(): Promise<void> {
         return
       }
 
+      if (screen === 'card-full') {
+        void backFromCardFull()
+        return
+      }
+
       if (screen === 'card' && activeCard) {
         if (event.listEvent?.currentSelectItemIndex !== undefined) {
           cardDraftIndex = event.listEvent.currentSelectItemIndex
+        }
+        if (cardDraftIndex >= activeCard.drafts.length) {
+          void openCardFull()
+          return
         }
         void startSendCountdown()
       }

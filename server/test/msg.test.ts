@@ -129,10 +129,17 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
     headers: { Authorization: `Bearer ${token}` },
   })
   assert.equal(historyCardRes.status, 200)
-  const historyCard = (await historyCardRes.json()) as { chatView: string; gist: string }
+  const historyCard = (await historyCardRes.json()) as {
+    chatView: string
+    gist: string
+    fullText: string
+    hasMore: boolean
+  }
   assert.equal(historyCard.chatView, 'with_history')
-  assert.match(historyCard.gist, /Privet! Prishli KP do 17:00/)
-  assert.match(historyCard.gist, /You: Da, prishlyu do 17:00/)
+  assert.equal(historyCard.gist, 'Privet! Prishli KP do 17:00')
+  assert.equal(historyCard.hasMore, true)
+  assert.match(historyCard.fullText, /Privet! Prishli KP do 17:00/)
+  assert.match(historyCard.fullText, /You: Da, prishlyu do 17:00/)
 
   const actionRows = db.select().from(actions).all()
   assert.equal(actionRows.length, 1)
