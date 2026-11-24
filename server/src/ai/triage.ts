@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { CalendarSlot } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
-import { toLens } from '../lib/translit.js'
+import { toOriginalLens } from '../lib/translit.js'
 import type { LlmProvider } from './provider.js'
 
 export const triageDraftSchema = z.object({
@@ -59,8 +59,8 @@ Rules:
     1) Direct positive/actionable answer (e.g. confirming with specific next step or accepting the request).
     2) Specific alternative, clarifying question, or counter-offer tailored to the message.
     3) Polite defer/busy response with a realistic timeframe (e.g. "Сейчас на встрече, отвечу через час").
-  - For every draft, "lens" must be <= 32 chars in ASCII/Latin-1 (transliterate non-Latin scripts into Latin, keep it clear and readable on smart glasses).
-  - If intent is "schedule" and "Available calendar slots" are provided, use 2-3 of those exact slots in drafts: set "slot" to the slot's exact ISO start string, and keep "lens" <= 27 chars (e.g. "Tomorrow 15:00 works"). Otherwise set "slot" to null.
+  - For every draft, "lens" must be <= 32 chars in the SAME original language/script as "text" (do NOT transliterate Russian/Cyrillic into Latin; keep Russian in Cyrillic, English in English).
+  - If intent is "schedule" and "Available calendar slots" are provided, use 2-3 of those exact slots in drafts: set "slot" to the slot's exact ISO start string, and keep "lens" <= 27 chars (e.g. "Завтра в 15:00 удобно" or "Tomorrow 15:00 works"). Otherwise set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
 
 const SCHEDULE_FALLBACK_RE =
@@ -75,7 +75,7 @@ export function buildFallbackTriage(input: {
   freeSlots?: CalendarSlot[]
 }): TriageResult {
   const isCyrillic = /[а-яёўқғҳ]/i.test(input.text)
-  const gist = toLens(input.text || input.fromName || 'New message', 40) || 'New message'
+  const gist = toOriginalLens(input.text || input.fromName || 'New message', 40) || 'New message'
   const isUrgent = URGENT_FALLBACK_RE.test(input.text)
   const priority: 'urgent' | 'needs_reply' = isUrgent ? 'urgent' : 'needs_reply'
   const isSchedule = Boolean(
@@ -85,12 +85,12 @@ export function buildFallbackTriage(input: {
   if (isSchedule && input.freeSlots && input.freeSlots.length > 0) {
     const slotDrafts: TriageDraft[] = input.freeSlots.slice(0, 2).map((s, idx) => ({
       text: idx === 0 ? `${s.label} works for me` : `How about ${s.label}?`,
-      lens: toLens(idx === 0 ? `${s.label} works` : `${s.label}?`, 27) || s.label,
+      lens: toOriginalLens(idx === 0 ? `${s.label} works` : `${s.label}?`, 27) || s.label,
       slot: s.startIso,
     }))
     slotDrafts.push(
       isCyrillic
-        ? { text: 'Отвечу чуть позже', lens: 'Otvechu chut pozzhe', slot: null }
+        ? { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null }
         : { text: 'Will check my schedule', lens: 'Check schedule', slot: null },
     )
     return {
@@ -104,9 +104,9 @@ export function buildFallbackTriage(input: {
 
   const drafts: TriageDraft[] = isCyrillic
     ? [
-        { text: 'Да, хорошо', lens: 'Da, khorosho', slot: null },
-        { text: 'Отвечу чуть позже', lens: 'Otvechu chut pozzhe', slot: null },
-        { text: 'Созвонимся позже?', lens: 'Sozvonimsya pozzhe?', slot: null },
+        { text: 'Да, хорошо', lens: 'Да, хорошо', slot: null },
+        { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null },
+        { text: 'Созвонимся позже?', lens: 'Созвонимся позже?', slot: null },
       ]
     : [
         { text: 'Yes, sounds good', lens: 'Yes, sounds good', slot: null },
@@ -127,14 +127,20 @@ function normalizeTriageResult(
   raw: TriageResult,
   fallbackInput: { text: string; fromName: string; freeSlots?: CalendarSlot[] },
 ): TriageResult {
-  const gist = toLens(raw.gist, 40) || toLens(fallbackInput.text || fallbackInput.fromName, 40) || 'New message'
+  const gist =
+    toOriginalLens(raw.gist, 40) ||
+    toOriginalLens(fallbackInput.text || fallbackInput.fromName, 40) ||
+    'New message'
   const allowedSlots = new Set((fallbackInput.freeSlots ?? []).map((s) => s.startIso))
   let drafts = raw.drafts.slice(0, 3).map((d) => {
     const validSlot =
       d.slot && (allowedSlots.size === 0 || allowedSlots.has(d.slot)) ? d.slot : null
     return {
       text: d.text.trim(),
-      lens: toLens(d.lens || d.text, validSlot ? 27 : 32) || toLens(d.text, 32) || 'Reply',
+      lens:
+        toOriginalLens(d.lens || d.text, validSlot ? 27 : 32) ||
+        toOriginalLens(d.text, 32) ||
+        'Reply',
       slot: validSlot,
     }
   })
@@ -151,7 +157,7 @@ function normalizeTriageResult(
   ) {
     const slotDrafts: TriageDraft[] = fallbackInput.freeSlots.slice(0, 2).map((s, idx) => ({
       text: idx === 0 ? `${s.label} works for me` : `How about ${s.label}?`,
-      lens: toLens(idx === 0 ? `${s.label} works` : `${s.label}?`, 27) || s.label,
+      lens: toOriginalLens(idx === 0 ? `${s.label} works` : `${s.label}?`, 27) || s.label,
       slot: s.startIso,
     }))
     const remaining = drafts.slice(0, Math.max(0, 3 - slotDrafts.length))

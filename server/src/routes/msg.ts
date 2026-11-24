@@ -12,7 +12,7 @@ import {
   type GoogleCalendarClient,
 } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
-import { toLens } from '../lib/translit.js'
+import { toOriginalLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
 import { getUserSettings } from './settings.js'
 
@@ -98,7 +98,7 @@ export function createMsgRouter(options?: {
     const drafts = ai.drafts.slice(0, 3).map((d, index) => {
       const slot = d.slot ?? null
       const hasCal = Boolean(slot)
-      const baseLens = toLens(d.lens || d.text, hasCal ? 27 : 32) || 'Reply'
+      const baseLens = toOriginalLens(d.lens || d.text, hasCal ? 27 : 32) || 'Reply'
       const lens = hasCal && !baseLens.endsWith('+cal') ? `${baseLens} +cal` : baseLens
       return {
         index,
@@ -110,70 +110,46 @@ export function createMsgRouter(options?: {
 
     const userCfg = getUserSettings(db, authUser.id)
     const now = Date.now()
-    const threadRows =
-      userCfg.chatView === 'with_history'
-        ? db
-            .select()
-            .from(messages)
-            .where(
-              and(
-                eq(messages.userId, authUser.id),
-                eq(messages.chatId, row.chatId),
-                gt(messages.expiresAt, now),
-              ),
-            )
-            .orderBy(desc(messages.receivedAt), desc(messages.id))
-            .limit(8)
-            .all()
-            .reverse()
-        : db
-            .select()
-            .from(messages)
-            .where(
-              and(
-                eq(messages.userId, authUser.id),
-                eq(messages.chatId, row.chatId),
-                eq(messages.status, 'new'),
-                eq(messages.isFromOwner, false),
-                gt(messages.expiresAt, now),
-              ),
-            )
-            .orderBy(desc(messages.receivedAt), desc(messages.id))
-            .limit(6)
-            .all()
-            .reverse()
+    const threadRows = db
+      .select()
+      .from(messages)
+      .where(
+        and(
+          eq(messages.userId, authUser.id),
+          eq(messages.chatId, row.chatId),
+          gt(messages.expiresAt, now),
+        ),
+      )
+      .orderBy(desc(messages.receivedAt), desc(messages.id))
+      .limit(8)
+      .all()
+      .reverse()
 
     const displayRows = threadRows.length > 0 ? threadRows : [row]
     const fullText = displayRows
       .map((m) => {
         if (m.isFromOwner) {
-          return `You: ${toLens(m.text || '[media]', 220)}`
+          return `You: ${toOriginalLens(m.text || '[media]', 220)}`
         }
-        const mAi = parseAiOrFallback(m.aiJson, { text: m.text, fromName: m.fromName })
-        const urgentPrefix = displayRows.length > 1 && mAi.priority === 'urgent' ? '! ' : ''
-        return `${urgentPrefix}${toLens(m.text || '[media]', 220)}`
+        const sender = toOriginalLens(m.fromName || row.fromName, 20) || 'Chat'
+        return `${sender}: ${toOriginalLens(m.text || '[media]', 220)}`
       })
       .join('\n')
       .slice(0, 900)
 
-    const compactGist = toLens(row.text || '[media]', 72)
-    const hasMore =
-      fullText.length > compactGist.length ||
-      fullText.includes('\n') ||
-      displayRows.length > 1 ||
-      userCfg.chatView === 'with_history'
+    const compactGist = toOriginalLens(row.text || '[media]', 72)
 
     return c.json({
       id: row.id,
       chatId: row.chatId,
-      from: toLens(row.fromName, 20),
+      from: toOriginalLens(row.fromName, 20),
       priority: ai.priority === 'urgent' ? 'urgent' : 'needs_reply',
       intent: ai.intent,
       chatView: userCfg.chatView,
       gist: compactGist,
       fullText: fullText || compactGist,
-      hasMore,
-      text: toLens(row.text || '[media]', 120),
+      hasMore: true,
+      text: toOriginalLens(row.text || '[media]', 120),
       drafts,
     })
   })
@@ -312,7 +288,7 @@ export function createMsgRouter(options?: {
       if (googleAcc && !Number.isNaN(startMs)) {
         const startIso = new Date(startMs).toISOString()
         const endIso = new Date(startMs + 30 * 60_000).toISOString()
-        const summary = `Meeting: ${toLens(row.fromName, 40) || row.fromName}`
+        const summary = `Meeting: ${toOriginalLens(row.fromName, 40) || row.fromName}`
         try {
           const refreshToken = decryptSecret(googleAcc.refreshTokenEnc)
           const created = await calendarClient.createEvent({

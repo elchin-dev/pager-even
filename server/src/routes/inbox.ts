@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { triageResultSchema } from '../ai/triage.js'
 import { getDb, type AppDb } from '../db/index.js'
 import { messages } from '../db/schema.js'
-import { toLens } from '../lib/translit.js'
+import { toOriginalLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
 import { getUserSettings, type ChatView, type FeedMode } from './settings.js'
 
@@ -120,8 +120,8 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
         hasDrafts
 
       const formattedPreview = row.isFromOwner
-        ? toLens(`You: ${row.text || '[media]'}`, 40)
-        : toLens(row.text || '[media]', 40)
+        ? toOriginalLens(`You: ${row.text || '[media]'}`, 40)
+        : toOriginalLens(row.text || '[media]', 40)
 
       const existingAll = allGrouped.get(row.chatId)
       if (existingAll) {
@@ -131,7 +131,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
         // In with_history, if the newest row was owner's reply, take contact name from incoming row
         if (!row.isFromOwner && !existingAll.hasIncomingId) {
           existingAll.id = row.id
-          existingAll.from = toLens(row.fromName, 12)
+          existingAll.from = toOriginalLens(row.fromName, 12)
           existingAll.hasIncomingId = true
         }
         if (isUrgentRow) {
@@ -152,7 +152,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
         allGrouped.set(row.chatId, {
           id: row.id,
           chatId: row.chatId,
-          from: row.isFromOwner ? 'Chat' : toLens(row.fromName, 12),
+          from: row.isFromOwner ? 'Chat' : toOriginalLens(row.fromName, 12),
           preview: formattedPreview,
           count: isUnreadIncoming ? 1 : 0,
           priority,
@@ -177,7 +177,7 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
           urgentGrouped.set(row.chatId, {
             id: row.id,
             chatId: row.chatId,
-            from: toLens(row.fromName, 12),
+            from: toOriginalLens(row.fromName, 12),
             preview: formattedPreview,
             count: 1,
             priority,

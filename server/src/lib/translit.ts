@@ -92,9 +92,10 @@ const TYPOGRAPHIC_MAP: Record<string, string> = {
   '\u00A0': ' ',
 }
 
-function isSupportedLensChar(code: number): boolean {
+function isSupportedLensChar(code: number, allowCyrillic = false): boolean {
   if (code >= 0x20 && code <= 0x7e) return true
   if (code >= 0x00a1 && code <= 0x00ff) return true
+  if (allowCyrillic && code >= 0x0400 && code <= 0x04ff) return true
   if (code === 0x2026) return true
   if (code >= 0x2190 && code <= 0x21ff) return true
   if (code >= 0x2500 && code <= 0x259f) return true
@@ -149,4 +150,33 @@ export function toLens(input: string, maxLen: number): string {
 
   const sliced = normalized.slice(0, maxLen - 1).trimEnd()
   return `${sliced}…`
+}
+
+export function toOriginalLens(input: string, maxLen: number): string {
+  if (maxLen <= 0) return ''
+
+  let out = ''
+  for (const ch of input) {
+    if (ch in TYPOGRAPHIC_MAP) {
+      out += TYPOGRAPHIC_MAP[ch]
+      continue
+    }
+    if (ch === '\n' || ch === '\r' || ch === '\t') {
+      out += ' '
+      continue
+    }
+    const code = ch.codePointAt(0)
+    if (code !== undefined && isSupportedLensChar(code, true)) {
+      out += ch
+    }
+  }
+
+  const normalized = out.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLen) {
+    return normalized
+  }
+  if (maxLen === 1) {
+    return '…'
+  }
+  return `${normalized.slice(0, maxLen - 1).trimEnd()}…`
 }

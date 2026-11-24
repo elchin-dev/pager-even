@@ -132,7 +132,7 @@ test('GET /api/inbox groups by chat, filters status=new, sorts received_at desc,
   // Latest chat (111) comes first
   assert.equal(body.items[0]?.chatId, 111)
   assert.ok(body.items[0]!.from.length <= 12)
-  assert.equal(body.items[0]?.from, 'Aziz Karimo…')
+  assert.equal(body.items[0]?.from, 'Азиз Каримо…')
   assert.ok(body.items[0]!.preview.length <= 40)
   assert.ok(!body.items[0]!.preview.includes('🔥'))
 

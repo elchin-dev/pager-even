@@ -91,9 +91,9 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
     drafts: Array<{ index: number; lens: string }>
   }
   assert.equal(card.id, 10)
-  assert.equal(card.from, 'Aziz Karimov')
+  assert.equal(card.from, 'Азиз Каримов')
   assert.equal(card.priority, 'urgent')
-  assert.equal(card.gist, 'Privet! Prishli KP do 17:00')
+  assert.equal(card.gist, 'Привет! Пришли КП до 17:00')
   assert.equal(card.drafts.length, 3)
   assert.equal(card.drafts[0]?.lens, 'Da, prishlyu do 17:00')
 
@@ -136,10 +136,10 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
     hasMore: boolean
   }
   assert.equal(historyCard.chatView, 'with_history')
-  assert.equal(historyCard.gist, 'Privet! Prishli KP do 17:00')
+  assert.equal(historyCard.gist, 'Привет! Пришли КП до 17:00')
   assert.equal(historyCard.hasMore, true)
-  assert.match(historyCard.fullText, /Privet! Prishli KP do 17:00/)
-  assert.match(historyCard.fullText, /You: Da, prishlyu do 17:00/)
+  assert.match(historyCard.fullText, /Азиз Каримов: Привет! Пришли КП до 17:00/)
+  assert.match(historyCard.fullText, /You: Да, пришлю до 17:00/)
 
   const actionRows = db.select().from(actions).all()
   assert.equal(actionRows.length, 1)

@@ -104,9 +104,6 @@ export function createGeminiProvider(config: {
               responseMimeType: 'application/json',
               temperature: 0.2,
               maxOutputTokens: opts.maxTokens ?? 600,
-              thinkingConfig: {
-                thinkingBudget: 0,
-              },
             },
           }),
           signal: AbortSignal.timeout(timeoutMs),

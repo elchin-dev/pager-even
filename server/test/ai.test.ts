@@ -114,9 +114,9 @@ test('triageMessage normalizes gist <= 40 and draft.lens <= 32, and falls back w
   assert.equal(ok.usedFallback, false)
   assert.equal(ok.result.priority, 'urgent')
   assert.ok(ok.result.gist.length <= 40)
-  assert.ok(!/[а-яё]/i.test(ok.result.gist))
+  assert.ok(/[а-яё]/i.test(ok.result.gist))
   assert.ok(ok.result.drafts[0]!.lens.length <= 32)
-  assert.ok(!/[а-яё]/i.test(ok.result.drafts[0]!.lens))
+  assert.ok(/[а-яё]/i.test(ok.result.drafts[0]!.lens))
 
   const fallback = await triageMessage(
     {

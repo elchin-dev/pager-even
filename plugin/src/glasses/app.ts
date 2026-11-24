@@ -266,6 +266,7 @@ function buildCardPayload(card: MessageCard): {
   })
 
   const draftItems = card.drafts.slice(0, 3).map((draft) => draft.lens.slice(0, 64))
+  draftItems.push('Пропустить')
   const drafts = new ListContainerProperty({
     xPosition: 0,
     yPosition: 114,
@@ -621,20 +622,10 @@ export async function startGlassesApp(): Promise<void> {
       if (disposed) return
       activeCard = card
       cardDraftIndex = 0
-      const shouldStartFull = Boolean(
-        card.hasMore || (card.fullText && card.fullText !== card.gist),
+      screen = 'card-full'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildCardFullPayload(card)),
       )
-      if (shouldStartFull) {
-        screen = 'card-full'
-        await bridge.rebuildPageContainer(
-          new RebuildPageContainer(buildCardFullPayload(card)),
-        )
-      } else {
-        screen = 'card'
-        await bridge.rebuildPageContainer(
-          new RebuildPageContainer(buildCardPayload(card)),
-        )
-      }
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         await handleUnauthorized()
@@ -870,10 +861,10 @@ export async function startGlassesApp(): Promise<void> {
         return
       }
       if (screen === 'card') {
-        if (activeCard && (activeCard.hasMore || (activeCard.fullText && activeCard.fullText !== activeCard.gist))) {
+        if (activeCard) {
           void openCardFull()
         } else {
-          void skipActiveCard()
+          void returnToInbox()
         }
         return
       }
@@ -954,7 +945,7 @@ export async function startGlassesApp(): Promise<void> {
           cardDraftIndex = event.listEvent.currentSelectItemIndex
         }
         if (cardDraftIndex >= activeCard.drafts.length) {
-          void openCardFull()
+          void skipActiveCard()
           return
         }
         void startSendCountdown()
