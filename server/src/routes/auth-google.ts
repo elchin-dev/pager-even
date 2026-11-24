@@ -56,7 +56,7 @@ function htmlPage(title: string, body: string): string {
 
 export function createGoogleAuthRouter(options?: GoogleAuthRouterOptions): Hono {
   const router = new Hono()
-  const pendingStates = new Map<string, { userId: number; expiresAt: number }>()
+  const pendingStates = new Map<string, { userId: number; tokenHash: string; expiresAt: number }>()
 
   function pruneExpiredStates(now: number): void {
     for (const [key, entry] of pendingStates.entries()) {
@@ -89,9 +89,9 @@ export function createGoogleAuthRouter(options?: GoogleAuthRouterOptions): Hono 
     const now = Date.now()
     const tokenHash = sha256Hex(rawToken)
 
-    const updated = db
-      .update(linkTokens)
-      .set({ usedAt: now })
+    const row = db
+      .select({ userId: linkTokens.userId })
+      .from(linkTokens)
       .where(
         and(
           eq(linkTokens.tokenHash, tokenHash),
@@ -100,28 +100,22 @@ export function createGoogleAuthRouter(options?: GoogleAuthRouterOptions): Hono 
           gt(linkTokens.expiresAt, now),
         ),
       )
-      .run()
+      .get()
 
-    if (updated.changes !== 1) {
+    if (!row) {
       return c.html(
         htmlPage('Link expired', 'This link is invalid or has already been used. Run /google in Telegram for a new link.'),
         400,
       )
     }
 
-    const row = db
-      .select({ userId: linkTokens.userId })
-      .from(linkTokens)
-      .where(eq(linkTokens.tokenHash, tokenHash))
-      .get()
-
-    if (!row) {
-      return c.html(htmlPage('Invalid link', 'Authorization link not found.'), 400)
-    }
-
     pruneExpiredStates(now)
     const state = randomBytes(24).toString('base64url')
-    pendingStates.set(state, { userId: row.userId, expiresAt: now + OAUTH_STATE_TTL_MS })
+    pendingStates.set(state, {
+      userId: row.userId,
+      tokenHash,
+      expiresAt: now + OAUTH_STATE_TTL_MS,
+    })
 
     const authUrl = buildGoogleAuthUrl({
       clientId: oauth.clientId,
@@ -186,6 +180,25 @@ export function createGoogleAuthRouter(options?: GoogleAuthRouterOptions): Hono 
     }
 
     const db = options?.db ?? getDb()
+    const tokenClaim = db
+      .update(linkTokens)
+      .set({ usedAt: now })
+      .where(
+        and(
+          eq(linkTokens.tokenHash, stateEntry.tokenHash),
+          eq(linkTokens.purpose, 'google'),
+          isNull(linkTokens.usedAt),
+        ),
+      )
+      .run()
+
+    if (tokenClaim.changes !== 1) {
+      return c.html(
+        htmlPage('Link expired', 'This link has already been used. Run /google in Telegram for a new link.'),
+        400,
+      )
+    }
+
     const existing = db
       .select()
       .from(googleAccounts)

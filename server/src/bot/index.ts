@@ -297,6 +297,7 @@ export function createBot(
 
     await ctx.reply(
       `Откройте ссылку в обычном браузере, чтобы подключить Google Calendar (действует 10 минут):\n${url}`,
+      { link_preview_options: { is_disabled: true } },
     )
   })
 

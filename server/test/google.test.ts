@@ -144,16 +144,14 @@ test('/google command -> one-time /auth/google/start -> /callback encrypts refre
     const state = new URL(location).searchParams.get('state')
     assert.ok(state)
 
-    // One-time token cannot be reused
-    const reuseRes = await app.request(startPath)
-    assert.equal(reuseRes.status, 400)
-
     const cbRes = await app.request(`/auth/google/callback?code=auth_code_1&state=${encodeURIComponent(state)}`)
     assert.equal(cbRes.status, 200)
     const html = await cbRes.text()
     assert.match(html, /Google Calendar connected/)
 
-    // One-time state cannot be reused
+    // One-time token and state cannot be reused after callback completes
+    const reuseStartRes = await app.request(startPath)
+    assert.equal(reuseStartRes.status, 400)
     const cbReuseRes = await app.request(`/auth/google/callback?code=auth_code_1&state=${encodeURIComponent(state)}`)
     assert.equal(cbReuseRes.status, 400)
 
