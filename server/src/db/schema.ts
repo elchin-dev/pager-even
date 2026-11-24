@@ -16,6 +16,23 @@ export const users = sqliteTable(
   (table) => [index('users_business_connection_idx').on(table.businessConnectionId)],
 )
 
+export const userSettings = sqliteTable('user_settings', {
+  userId: integer('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  feedMode: text('feed_mode', { enum: ['urgent', 'all'] })
+    .notNull()
+    .default('urgent'),
+  voiceEnabled: integer('voice_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(true),
+  conflictAlerts: integer('conflict_alerts', { mode: 'boolean' })
+    .notNull()
+    .default(true),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+})
+
 export const devices = sqliteTable('devices', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   userId: integer('user_id')

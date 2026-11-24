@@ -23,6 +23,9 @@ import {
   skipMessage,
   startPairing,
   subscribeInboxStream,
+  updateSettings,
+  type FeedMode,
+  type InboxCounts,
   type InboxItem,
   type MessageCard,
 } from '../lib/api'
@@ -66,6 +69,7 @@ const SEND_UNDO_SECONDS = 3
 const MENU_REFRESH_ID = 1
 const MENU_SKIP_ID = 2
 const MENU_BACK_ID = 3
+const MENU_MODE_ID = 4
 
 type AppScreen =
   | 'pairing'
@@ -82,7 +86,10 @@ function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeLis
 }
 
 function buildMenuObject(includeCardActions = false): MenuContainerProperty {
-  const menuItems = [new MenuItemProperty({ itemName: 'Refresh', itemID: MENU_REFRESH_ID })]
+  const menuItems = [
+    new MenuItemProperty({ itemName: 'Mode: Urgent/All', itemID: MENU_MODE_ID }),
+    new MenuItemProperty({ itemName: 'Refresh', itemID: MENU_REFRESH_ID }),
+  ]
   if (includeCardActions) {
     menuItems.push(
       new MenuItemProperty({ itemName: 'Skip', itemID: MENU_SKIP_ID }),
@@ -92,8 +99,9 @@ function buildMenuObject(includeCardActions = false): MenuContainerProperty {
   return new MenuContainerProperty({ menuItems })
 }
 
-function formatInboxListLine(item: InboxItem): string {
-  const prefix = item.priority === 'urgent' ? '! ' : ''
+function formatInboxListLine(item: InboxItem, mode: FeedMode): string {
+  const isUrgent = Boolean(item.urgent || item.priority === 'urgent')
+  const prefix = mode === 'all' && isUrgent ? '! ' : ''
   return `${prefix}${item.from}  ${item.preview}`.slice(0, 64)
 }
 
@@ -128,7 +136,21 @@ function buildPairingTextContainers(bodyContent: string): TextContainerProperty[
   ]
 }
 
-function buildInboxPayload(items: InboxItem[], overrideEmptyText?: string): {
+function formatInboxHeader(mode: FeedMode, counts: InboxCounts): string {
+  if (mode === 'urgent') {
+    return `URGENT · ${counts.urgent}`
+  }
+  return counts.urgent > 0
+    ? `ALL · ${counts.all} (${counts.urgent}!)`
+    : `ALL · ${counts.all}`
+}
+
+function buildInboxPayload(
+  items: InboxItem[],
+  mode: FeedMode,
+  counts: InboxCounts,
+  overrideEmptyText?: string,
+): {
   containerTotalNum: number
   textObject: TextContainerProperty[]
   listObject?: ListContainerProperty[]
@@ -144,11 +166,15 @@ function buildInboxPayload(items: InboxItem[], overrideEmptyText?: string): {
     paddingLength: 4,
     containerID: INBOX_HEADER_ID,
     containerName: INBOX_HEADER_NAME,
-    content: `PAGER · ${items.length} need reply`,
+    content: formatInboxHeader(mode, counts),
     isEventCapture: 0,
   })
 
   if (items.length === 0) {
+    const defaultEmpty =
+      mode === 'urgent' && counts.all > 0
+        ? `No urgent · ${counts.all} in All`
+        : 'All clear ✓'
     const emptyText = new TextContainerProperty({
       xPosition: 0,
       yPosition: 46,
@@ -159,7 +185,7 @@ function buildInboxPayload(items: InboxItem[], overrideEmptyText?: string): {
       paddingLength: 4,
       containerID: INBOX_EMPTY_ID,
       containerName: INBOX_EMPTY_NAME,
-      content: overrideEmptyText ?? 'All clear ✓',
+      content: overrideEmptyText ?? defaultEmpty,
       isEventCapture: 1,
     })
 
@@ -185,7 +211,7 @@ function buildInboxPayload(items: InboxItem[], overrideEmptyText?: string): {
       itemCount: items.length,
       itemWidth: 560,
       isItemSelectBorderEn: 1,
-      itemName: items.map(formatInboxListLine),
+      itemName: items.map((item) => formatInboxListLine(item, mode)),
     }),
   })
 
@@ -314,6 +340,8 @@ export async function startGlassesApp(): Promise<void> {
   let disposed = false
 
   let inboxItems: InboxItem[] = []
+  let feedMode: FeedMode = 'urgent'
+  let inboxCounts: InboxCounts = { urgent: 0, all: 0 }
   let selectedIndex = 0
   let lastInboxRebuildAt = 0
   let pendingInboxTimer: number | null = null
@@ -389,17 +417,19 @@ export async function startGlassesApp(): Promise<void> {
     }
     isRefreshingInbox = true
     try {
-      const items = await fetchInbox(bridge)
+      const data = await fetchInbox(bridge)
       if (disposed || (screen !== 'inbox' && screen !== 'inbox-error')) return
       screen = 'inbox'
-      inboxItems = items
+      feedMode = data.mode
+      inboxCounts = data.counts
+      inboxItems = data.items
       if (selectedIndex >= inboxItems.length) {
         selectedIndex = 0
       }
       lastInboxRebuildAt = Date.now()
       renderPhoneInbox(inboxItems.length)
       await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildInboxPayload(inboxItems)),
+        new RebuildPageContainer(buildInboxPayload(inboxItems, feedMode, inboxCounts)),
       )
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -413,7 +443,7 @@ export async function startGlassesApp(): Promise<void> {
         })
         await bridge.rebuildPageContainer(
           new RebuildPageContainer(
-            buildInboxPayload([], `Error: ${msg}\nTap to retry`),
+            buildInboxPayload([], feedMode, inboxCounts, `Error: ${msg}\nTap to retry`),
           ),
         )
       }
@@ -468,11 +498,15 @@ export async function startGlassesApp(): Promise<void> {
 
     if (isStartup) {
       await bridge.createStartUpPageContainer(
-        new CreateStartUpPageContainer(buildInboxPayload([], 'Loading…')),
+        new CreateStartUpPageContainer(
+          buildInboxPayload([], feedMode, inboxCounts, 'Loading…'),
+        ),
       )
     } else {
       await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildInboxPayload([], 'Loading…')),
+        new RebuildPageContainer(
+          buildInboxPayload([], feedMode, inboxCounts, 'Loading…'),
+        ),
       )
     }
 
@@ -489,6 +523,31 @@ export async function startGlassesApp(): Promise<void> {
     cardDraftIndex = 0
     screen = 'inbox'
     await refreshInboxNow()
+  }
+
+  async function toggleFeedMode(): Promise<void> {
+    if (disposed || isActionInFlight) return
+    isActionInFlight = true
+    const nextMode: FeedMode = feedMode === 'urgent' ? 'all' : 'urgent'
+    try {
+      const updated = await updateSettings(bridge, { feedMode: nextMode })
+      if (disposed) return
+      feedMode = updated.feedMode
+      selectedIndex = 0
+      stopSendTimer()
+      activeCard = null
+      cardDraftIndex = 0
+      screen = 'inbox'
+      await refreshInboxNow()
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        console.warn('[settings] toggle feed mode failed:', err instanceof Error ? err.message : err)
+      }
+    } finally {
+      isActionInFlight = false
+    }
   }
 
   async function openCard(id: number): Promise<void> {
@@ -731,7 +790,11 @@ export async function startGlassesApp(): Promise<void> {
     if (event.menuItemClickEvent) {
       const itemId = event.menuItemClickEvent.itemID
       console.log('[menu] clicked:', itemId)
-      if (itemId === MENU_REFRESH_ID) {
+      if (itemId === MENU_MODE_ID) {
+        if (screen === 'inbox' || screen === 'inbox-error' || screen === 'card') {
+          void toggleFeedMode()
+        }
+      } else if (itemId === MENU_REFRESH_ID) {
         if (screen === 'inbox') {
           scheduleInboxRefresh(true)
         } else if (screen === 'card' && activeCard) {

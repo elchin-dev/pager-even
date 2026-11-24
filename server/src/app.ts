@@ -7,6 +7,7 @@ import { createGoogleAuthRouter, type GoogleAuthRouterOptions } from './routes/a
 import { createInboxRouter } from './routes/inbox.js'
 import { createMsgRouter, type SendTelegramMessageFn } from './routes/msg.js'
 import { createPairRouter, type PairRouterOptions } from './routes/pair.js'
+import { createSettingsRouter } from './routes/settings.js'
 import { createStreamRouter } from './routes/stream.js'
 import { createTgRouter, type TgRouterOptions } from './routes/tg.js'
 import type { GoogleCalendarClient } from './lib/google-calendar.js'
@@ -36,7 +37,7 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
     cors({
       origin: allowedOrigins,
       allowHeaders: ['Content-Type', 'Authorization'],
-      allowMethods: ['GET', 'POST', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'PUT', 'OPTIONS'],
     }),
   )
 
@@ -49,6 +50,7 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
 
   app.use('/api/*', createBearerAuthMiddleware(options?.db))
   app.route('/api/pair', createPairRouter({ db: options?.db, ...options?.pair }))
+  app.route('/api/settings', createSettingsRouter({ db: options?.db }))
   app.route('/api/inbox', createInboxRouter({ db: options?.db }))
   app.route(
     '/api/msg',

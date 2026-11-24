@@ -24,16 +24,33 @@ export type PairStatusResponse =
   | { status: 'expired' }
   | { status: 'paired'; deviceToken: string }
 
+export type FeedMode = 'urgent' | 'all'
+
+export interface UserSettings {
+  feedMode: FeedMode
+  voiceEnabled: boolean
+  conflictAlerts: boolean
+}
+
 export interface InboxItem {
   id: number
   chatId: number
   from: string
   preview: string
   count: number
-  priority?: 'urgent' | 'needs_reply'
+  priority?: 'urgent' | 'needs_reply' | 'fyi' | 'ignore'
+  urgent?: boolean
+  hasConflict?: boolean
+}
+
+export interface InboxCounts {
+  urgent: number
+  all: number
 }
 
 export interface InboxResponse {
+  mode: FeedMode
+  counts: InboxCounts
   items: InboxItem[]
 }
 
@@ -116,10 +133,29 @@ export async function apiFetch(
   })
 }
 
-export async function fetchInbox(bridge: EvenAppBridge): Promise<InboxItem[]> {
-  const res = await apiFetch(bridge, '/api/inbox', { method: 'GET' })
-  const data = await parseJson<InboxResponse>(res)
-  return data.items
+export async function fetchInbox(
+  bridge: EvenAppBridge,
+  mode?: FeedMode,
+): Promise<InboxResponse> {
+  const query = mode ? `?mode=${encodeURIComponent(mode)}` : ''
+  const res = await apiFetch(bridge, `/api/inbox${query}`, { method: 'GET' })
+  return parseJson<InboxResponse>(res)
+}
+
+export async function fetchSettings(bridge: EvenAppBridge): Promise<UserSettings> {
+  const res = await apiFetch(bridge, '/api/settings', { method: 'GET' })
+  return parseJson<UserSettings>(res)
+}
+
+export async function updateSettings(
+  bridge: EvenAppBridge,
+  patch: Partial<UserSettings>,
+): Promise<UserSettings> {
+  const res = await apiFetch(bridge, '/api/settings', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  })
+  return parseJson<UserSettings>(res)
 }
 
 export async function fetchMessageCard(

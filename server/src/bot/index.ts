@@ -474,13 +474,11 @@ export function createBot(
         usedFallback,
       })
 
-      if (triage.priority === 'urgent' || triage.priority === 'needs_reply') {
-        publishUserEvent(owner.id, {
-          type: 'inbox',
-          messageId: insertedId,
-          chatId: msg.chat.id,
-        })
-      }
+      publishUserEvent(owner.id, {
+        type: 'inbox',
+        messageId: insertedId,
+        chatId: msg.chat.id,
+      })
     }
 
     if (!isDuplicate && msg.text?.trim().toLowerCase() === 'ping') {

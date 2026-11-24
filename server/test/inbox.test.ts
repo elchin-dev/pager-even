@@ -115,14 +115,19 @@ test('GET /api/inbox groups by chat, filters status=new, sorts received_at desc,
     })
     .run()
 
-  const res = await app.request('/api/inbox', {
+  const res = await app.request('/api/inbox?mode=all', {
     headers: { Authorization: `Bearer ${token}` },
   })
   assert.equal(res.status, 200)
   const body = (await res.json()) as {
+    mode: string
+    counts: { urgent: number; all: number }
     items: Array<{ id: number; chatId: number; from: string; preview: string; count: number }>
   }
 
+  assert.equal(body.mode, 'all')
+  assert.equal(body.counts.all, 11)
+  assert.equal(body.counts.urgent, 0)
   assert.equal(body.items.length, 10)
   // Latest chat (111) comes first
   assert.equal(body.items[0]?.chatId, 111)
@@ -148,7 +153,7 @@ test('GET /api/inbox groups by chat, filters status=new, sorts received_at desc,
     })
     .run()
 
-  const res2 = await app.request('/api/inbox', {
+  const res2 = await app.request('/api/inbox?mode=all', {
     headers: { Authorization: `Bearer ${token}` },
   })
   const body2 = (await res2.json()) as {
@@ -212,9 +217,36 @@ test('GET /api/stream emits SSE inbox event on new business_message', async () =
   sqlite.close()
 })
 
-test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above needs_reply', async () => {
+test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed modes accurately', async () => {
   const { sqlite, db, app, token } = setupAppWithUser()
   const now = Date.now()
+
+  // Default settings
+  const settingsRes1 = await app.request('/api/settings', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  assert.equal(settingsRes1.status, 200)
+  const settings1 = (await settingsRes1.json()) as {
+    feedMode: string
+    voiceEnabled: boolean
+    conflictAlerts: boolean
+  }
+  assert.deepEqual(settings1, {
+    feedMode: 'urgent',
+    voiceEnabled: true,
+    conflictAlerts: true,
+  })
+
+  // Invalid settings rejected
+  const badSettingsRes = await app.request('/api/settings', {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ feedMode: 'unknown' }),
+  })
+  assert.equal(badSettingsRes.status, 400)
 
   // 1) ignore message
   db.insert(messages)
@@ -226,7 +258,7 @@ test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above need
       fromName: 'Promo Bot',
       businessConnectionId: 'bc_inbox_1',
       text: '50% discount today only!',
-      receivedAt: now + 5000,
+      receivedAt: now + 6000,
       status: 'new',
       aiJson: JSON.stringify({
         priority: 'ignore',
@@ -249,7 +281,7 @@ test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above need
       fromName: 'Bob',
       businessConnectionId: 'bc_inbox_1',
       text: 'Ok thanks!',
-      receivedAt: now + 4000,
+      receivedAt: now + 5000,
       status: 'new',
       aiJson: JSON.stringify({
         priority: 'fyi',
@@ -262,7 +294,7 @@ test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above need
     })
     .run()
 
-  // 3) needs_reply (newer timestamp than urgent)
+  // 3) needs_reply WITHOUT conflict (excluded from urgent, included in all)
   db.insert(messages)
     .values({
       userId: 1,
@@ -272,7 +304,7 @@ test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above need
       fromName: 'Mom',
       businessConnectionId: 'bc_inbox_1',
       text: 'Call tonight?',
-      receivedAt: now + 3000,
+      receivedAt: now + 4000,
       status: 'new',
       aiJson: JSON.stringify({
         priority: 'needs_reply',
@@ -285,7 +317,7 @@ test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above need
     })
     .run()
 
-  // 4) urgent (older timestamp, should still appear FIRST)
+  // 4) urgent WITH drafts (included in urgent)
   db.insert(messages)
     .values({
       userId: 1,
@@ -295,7 +327,7 @@ test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above need
       fromName: 'Aziz K.',
       businessConnectionId: 'bc_inbox_1',
       text: 'KP by 17:00?',
-      receivedAt: now + 1000,
+      receivedAt: now + 3000,
       status: 'new',
       aiJson: JSON.stringify({
         priority: 'urgent',
@@ -308,20 +340,137 @@ test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above need
     })
     .run()
 
-  const res = await app.request('/api/inbox', {
+  // 5) needs_reply WITH calendar conflict and drafts (included in urgent!)
+  db.insert(messages)
+    .values({
+      userId: 1,
+      chatId: 405,
+      tgMessageId: 5,
+      fromTgUserId: 405,
+      fromName: 'Dilnoza',
+      businessConnectionId: 'bc_inbox_1',
+      text: 'Meet Thu 15:00?',
+      receivedAt: now + 2000,
+      status: 'new',
+      aiJson: JSON.stringify({
+        priority: 'needs_reply',
+        intent: 'schedule',
+        gist: 'Meet Thu 15:00?',
+        lang: 'en',
+        conflict: {
+          title: 'Standup',
+          start: '2026-11-26T10:00:00.000Z',
+          end: '2026-11-26T11:00:00.000Z',
+        },
+        drafts: [{ text: 'Busy at 15:00, 17:00?', lens: 'Busy, 17:00 works?', slot: null }],
+      }),
+      expiresAt: now + 86_400_000,
+    })
+    .run()
+
+  // 6) urgent WITHOUT drafts (not answerable -> excluded from urgent, included in all)
+  db.insert(messages)
+    .values({
+      userId: 1,
+      chatId: 406,
+      tgMessageId: 6,
+      fromTgUserId: 406,
+      fromName: 'Alert Bot',
+      businessConnectionId: 'bc_inbox_1',
+      text: 'Server CPU 99%',
+      receivedAt: now + 1000,
+      status: 'new',
+      aiJson: JSON.stringify({
+        priority: 'urgent',
+        intent: 'info',
+        gist: 'CPU 99%',
+        lang: 'en',
+        drafts: [],
+      }),
+      expiresAt: now + 86_400_000,
+    })
+    .run()
+
+  // Default mode from user_settings is 'urgent'
+  const urgentRes = await app.request('/api/inbox', {
     headers: { Authorization: `Bearer ${token}` },
   })
-  assert.equal(res.status, 200)
-  const body = (await res.json()) as {
-    items: Array<{ id: number; chatId: number; from: string; preview: string; priority: string }>
+  assert.equal(urgentRes.status, 200)
+  const urgentBody = (await urgentRes.json()) as {
+    mode: string
+    counts: { urgent: number; all: number }
+    items: Array<{
+      id: number
+      chatId: number
+      preview: string
+      priority: string
+      urgent: boolean
+      hasConflict: boolean
+    }>
   }
 
-  assert.equal(body.items.length, 2)
-  assert.equal(body.items[0]?.chatId, 404)
-  assert.equal(body.items[0]?.priority, 'urgent')
-  assert.equal(body.items[0]?.preview, 'KP by 17:00?')
-  assert.equal(body.items[1]?.chatId, 403)
-  assert.equal(body.items[1]?.priority, 'needs_reply')
+  assert.equal(urgentBody.mode, 'urgent')
+  assert.deepEqual(urgentBody.counts, { urgent: 2, all: 6 })
+  assert.equal(urgentBody.items.length, 2)
+  assert.equal(urgentBody.items[0]?.chatId, 404)
+  assert.equal(urgentBody.items[0]?.preview, 'KP by 17:00?')
+  assert.equal(urgentBody.items[0]?.urgent, true)
+  assert.equal(urgentBody.items[1]?.chatId, 405)
+  assert.equal(urgentBody.items[1]?.hasConflict, true)
+  assert.equal(urgentBody.items[1]?.urgent, true)
+
+  // Switch user setting to 'all' via PUT /api/settings
+  const putRes = await app.request('/api/settings', {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ feedMode: 'all', voiceEnabled: false }),
+  })
+  assert.equal(putRes.status, 200)
+  const updatedSettings = (await putRes.json()) as {
+    feedMode: string
+    voiceEnabled: boolean
+    conflictAlerts: boolean
+  }
+  assert.deepEqual(updatedSettings, {
+    feedMode: 'all',
+    voiceEnabled: false,
+    conflictAlerts: true,
+  })
+
+  // Now GET /api/inbox uses 'all' from user_settings, sorted by received_at desc
+  const allRes = await app.request('/api/inbox', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  assert.equal(allRes.status, 200)
+  const allBody = (await allRes.json()) as {
+    mode: string
+    counts: { urgent: number; all: number }
+    items: Array<{ chatId: number; urgent: boolean; hasConflict: boolean }>
+  }
+
+  assert.equal(allBody.mode, 'all')
+  assert.deepEqual(allBody.counts, { urgent: 2, all: 6 })
+  assert.deepEqual(
+    allBody.items.map((i) => i.chatId),
+    [401, 402, 403, 404, 405, 406],
+  )
+  assert.equal(allBody.items.find((i) => i.chatId === 404)?.urgent, true)
+  assert.equal(allBody.items.find((i) => i.chatId === 405)?.urgent, true)
+  assert.equal(allBody.items.find((i) => i.chatId === 403)?.urgent, false)
+  assert.equal(allBody.items.find((i) => i.chatId === 401)?.urgent, false)
+  assert.equal(allBody.items.find((i) => i.chatId === 406)?.urgent, false)
+
+  // Explicit query param overrides user_settings
+  const overrideRes = await app.request('/api/inbox?mode=urgent', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  assert.equal(overrideRes.status, 200)
+  const overrideBody = (await overrideRes.json()) as { mode: string; items: unknown[] }
+  assert.equal(overrideBody.mode, 'urgent')
+  assert.equal(overrideBody.items.length, 2)
 
   sqlite.close()
 })
