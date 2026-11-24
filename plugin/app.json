@@ -11,7 +11,8 @@
       "name": "network",
       "desc": "Connect to the Pager backend API for triage, replies, and pairing.",
       "whitelist": [
-        "http://localhost:8787"
+        "http://localhost:8787",
+        "https://pager-even-production.up.railway.app"
       ]
     },
     {
