@@ -393,8 +393,8 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
     })
     .run()
 
-  // Default mode from user_settings is 'urgent'
-  const urgentRes = await app.request('/api/inbox', {
+  // ?mode=urgent filters to urgent/conflict + drafts only
+  const urgentRes = await app.request('/api/inbox?mode=urgent', {
     headers: { Authorization: `Bearer ${token}` },
   })
   assert.equal(urgentRes.status, 200)
@@ -457,9 +457,10 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
 
   assert.equal(allBody.mode, 'all')
   assert.deepEqual(allBody.counts, { urgent: 2, all: 6 })
+  // Urgent items appear first, then sorted by received_at desc
   assert.deepEqual(
     allBody.items.map((i) => i.chatId),
-    [401, 402, 403, 404, 405, 406],
+    [404, 405, 401, 402, 403, 406],
   )
   assert.equal(allBody.items.find((i) => i.chatId === 404)?.urgent, true)
   assert.equal(allBody.items.find((i) => i.chatId === 405)?.urgent, true)
@@ -532,7 +533,7 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
   assert.equal(timur.urgent, true)
   assert.equal(timur.preview, 'Urgent: send contract now!')
 
-  // Verify with_history includes replied chats, while new_only hides them
+  // Replied chat 606 is hidden after reply
   db.insert(messages)
     .values([
       {
@@ -564,27 +565,11 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
     ])
     .run()
 
-  // In new_only, replied chat 606 is hidden
-  const newOnlyRes = await app.request('/api/inbox?mode=all&chatView=new_only', {
+  const newOnlyRes = await app.request('/api/inbox', {
     headers: { Authorization: `Bearer ${token}` },
   })
   const newOnlyBody = (await newOnlyRes.json()) as { items: Array<{ chatId: number }> }
   assert.equal(newOnlyBody.items.some((i) => i.chatId === 606), false)
-
-  // In with_history, chat 606 is visible with "You: Hi Sara!" preview and unread count 0
-  const historyRes = await app.request('/api/inbox?mode=all&chatView=with_history', {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  const historyBody = (await historyRes.json()) as {
-    chatView: string
-    items: Array<{ chatId: number; from: string; preview: string; count: number }>
-  }
-  assert.equal(historyBody.chatView, 'with_history')
-  const sara = historyBody.items.find((i) => i.chatId === 606)
-  assert.ok(sara)
-  assert.equal(sara.from, 'Sara')
-  assert.equal(sara.preview, 'You: Hi Sara!')
-  assert.equal(sara.count, 0)
 
   sqlite.close()
 })

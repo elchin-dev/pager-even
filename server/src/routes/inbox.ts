@@ -79,15 +79,12 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
     }
 
     const now = Date.now()
-    const baseWhere =
-      chatView === 'new_only'
-        ? and(
-            eq(messages.userId, authUser.id),
-            eq(messages.status, 'new'),
-            eq(messages.isFromOwner, false),
-            gt(messages.expiresAt, now),
-          )
-        : and(eq(messages.userId, authUser.id), gt(messages.expiresAt, now))
+    const baseWhere = and(
+      eq(messages.userId, authUser.id),
+      eq(messages.status, 'new'),
+      eq(messages.isFromOwner, false),
+      gt(messages.expiresAt, now),
+    )
 
     const rows = db
       .select({
@@ -192,9 +189,14 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
       }
     }
 
-    const source = mode === 'urgent' ? urgentGrouped : allGrouped
+    const source = rawMode === 'urgent' ? urgentGrouped : allGrouped
     const items = Array.from(source.values())
-      .sort((a, b) => b.receivedAt - a.receivedAt)
+      .sort((a, b) => {
+        if (a.urgent !== b.urgent) {
+          return a.urgent ? -1 : 1
+        }
+        return b.receivedAt - a.receivedAt
+      })
       .slice(0, 10)
       .map((entry) => {
         const { receivedAt: _receivedAt, ...rest } = entry
@@ -206,8 +208,8 @@ export function createInboxRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
       })
 
     return c.json({
-      mode,
-      chatView,
+      mode: rawMode === 'urgent' ? 'urgent' : 'all',
+      chatView: 'new_only',
       counts: {
         urgent: urgentGrouped.size,
         all: allGrouped.size,

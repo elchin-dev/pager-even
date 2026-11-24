@@ -55,9 +55,11 @@ Rules:
 - gist: concise English/ASCII action summary <= 40 chars (e.g. "Asks for KP by 17:00").
 - lang: primary ISO 639-1 language code of the sender's message (e.g. "en", "ru", "uz").
 - drafts:
-  - If priority is "urgent" or "needs_reply", provide 3 distinct, natural, short replies in the sender's language ("text").
-  - If priority is "fyi" or "ignore", you may return 0 to 3 short drafts.
-  - For every draft, "lens" must be <= 32 chars in ASCII/Latin-1 (transliterate non-Latin scripts into Latin).
+  - If priority is "urgent" or "needs_reply", provide 3 distinct, natural, context-specific replies in the sender's language ("text") that directly answer what the sender asked (avoid generic filler like "Yes, sounds good" or "Will reply shortly" unless truly appropriate):
+    1) Direct positive/actionable answer (e.g. confirming with specific next step or accepting the request).
+    2) Specific alternative, clarifying question, or counter-offer tailored to the message.
+    3) Polite defer/busy response with a realistic timeframe (e.g. "Сейчас на встрече, отвечу через час").
+  - For every draft, "lens" must be <= 32 chars in ASCII/Latin-1 (transliterate non-Latin scripts into Latin, keep it clear and readable on smart glasses).
   - If intent is "schedule" and "Available calendar slots" are provided, use 2-3 of those exact slots in drafts: set "slot" to the slot's exact ISO start string, and keep "lens" <= 27 chars (e.g. "Tomorrow 15:00 works"). Otherwise set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
 

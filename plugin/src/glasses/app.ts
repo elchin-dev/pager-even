@@ -95,8 +95,6 @@ function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeLis
 
 function buildMenuObject(includeCardActions = false): MenuContainerProperty {
   const menuItems = [
-    new MenuItemProperty({ itemName: 'Mode: Urgent/All', itemID: MENU_MODE_ID }),
-    new MenuItemProperty({ itemName: 'Chat: New/History', itemID: MENU_CHAT_VIEW_ID }),
     new MenuItemProperty({ itemName: 'Refresh', itemID: MENU_REFRESH_ID }),
   ]
   if (includeCardActions) {
@@ -109,10 +107,10 @@ function buildMenuObject(includeCardActions = false): MenuContainerProperty {
   return new MenuContainerProperty({ menuItems })
 }
 
-function formatInboxListLine(item: InboxItem, mode: FeedMode): string {
+function formatInboxListLine(item: InboxItem): string {
   const isUrgent = Boolean(item.urgent || item.priority === 'urgent')
   const raw = `${item.from}  ${item.preview}`
-  if (mode === 'all' && isUrgent) {
+  if (isUrgent) {
     const trimmed = raw.length > 40 ? `${raw.slice(0, 39)}…` : raw
     const pad = ' '.repeat(Math.max(2, 42 - trimmed.length))
     return `${trimmed}${pad}!`.slice(0, 64)
@@ -151,18 +149,16 @@ function buildPairingTextContainers(bodyContent: string): TextContainerProperty[
   ]
 }
 
-function formatInboxHeader(mode: FeedMode, counts: InboxCounts): string {
-  if (mode === 'urgent') {
-    return `URGENT · ${counts.urgent}`
+function formatInboxHeader(counts: InboxCounts): string {
+  if (counts.urgent > 0) {
+    return `PAGER · ${counts.all} (${counts.urgent}!)`
   }
-  return counts.urgent > 0
-    ? `ALL · ${counts.all} (${counts.urgent}!)`
-    : `ALL · ${counts.all}`
+  return `PAGER · ${counts.all} new`
 }
 
 function buildInboxPayload(
   items: InboxItem[],
-  mode: FeedMode,
+  _mode: FeedMode,
   counts: InboxCounts,
   overrideEmptyText?: string,
 ): {
@@ -181,15 +177,11 @@ function buildInboxPayload(
     paddingLength: 4,
     containerID: INBOX_HEADER_ID,
     containerName: INBOX_HEADER_NAME,
-    content: formatInboxHeader(mode, counts),
+    content: formatInboxHeader(counts),
     isEventCapture: 0,
   })
 
   if (items.length === 0) {
-    const defaultEmpty =
-      mode === 'urgent' && counts.all > 0
-        ? `No urgent · ${counts.all} in All`
-        : 'All clear ✓'
     const emptyText = new TextContainerProperty({
       xPosition: 0,
       yPosition: 46,
@@ -200,7 +192,7 @@ function buildInboxPayload(
       paddingLength: 4,
       containerID: INBOX_EMPTY_ID,
       containerName: INBOX_EMPTY_NAME,
-      content: overrideEmptyText ?? defaultEmpty,
+      content: overrideEmptyText ?? 'All clear ✓',
       isEventCapture: 1,
     })
 
@@ -226,7 +218,7 @@ function buildInboxPayload(
       itemCount: items.length,
       itemWidth: 560,
       isItemSelectBorderEn: 1,
-      itemName: items.map((item) => formatInboxListLine(item, mode)),
+      itemName: items.map((item) => formatInboxListLine(item)),
     }),
   })
 
@@ -273,10 +265,7 @@ function buildCardPayload(card: MessageCard): {
     isEventCapture: 0,
   })
 
-  const draftItems = card.drafts.map((draft) => draft.lens.slice(0, 64))
-  if (card.hasMore || (card.fullText && card.fullText !== card.gist)) {
-    draftItems.push('Read full / History')
-  }
+  const draftItems = card.drafts.slice(0, 3).map((draft) => draft.lens.slice(0, 64))
   const drafts = new ListContainerProperty({
     xPosition: 0,
     yPosition: 114,
@@ -488,13 +477,7 @@ export async function startGlassesApp(): Promise<void> {
         selectedIndex = 0
       }
       lastInboxRebuildAt = Date.now()
-      renderPhoneInbox(inboxItems.length, {
-        feedMode,
-        chatView,
-        onUpdate: (patch) => {
-          void applySettingsPatch(patch)
-        },
-      })
+      renderPhoneInbox(inboxItems.length)
       await bridge.rebuildPageContainer(
         new RebuildPageContainer(buildInboxPayload(inboxItems, feedMode, inboxCounts)),
       )
