@@ -3,18 +3,22 @@ import { cors } from 'hono/cors'
 import type { AppDb } from './db/index.js'
 import { logger } from './lib/logger.js'
 import { createBearerAuthMiddleware, type AuthEnv } from './middleware/auth.js'
+import { createGoogleAuthRouter, type GoogleAuthRouterOptions } from './routes/auth-google.js'
 import { createInboxRouter } from './routes/inbox.js'
 import { createMsgRouter, type SendTelegramMessageFn } from './routes/msg.js'
 import { createPairRouter, type PairRouterOptions } from './routes/pair.js'
 import { createStreamRouter } from './routes/stream.js'
 import { createTgRouter, type TgRouterOptions } from './routes/tg.js'
+import type { GoogleCalendarClient } from './lib/google-calendar.js'
 
 export interface AppOptions {
   corsOrigins?: string[]
   db?: AppDb
   tg?: TgRouterOptions
   pair?: PairRouterOptions
+  googleAuth?: GoogleAuthRouterOptions
   sendTelegramMessage?: SendTelegramMessageFn
+  calendarClient?: GoogleCalendarClient
 }
 
 export function createApp(options?: AppOptions): Hono<AuthEnv> {
@@ -41,6 +45,7 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
   })
 
   app.route('/tg', createTgRouter({ db: options?.db, ...options?.tg }))
+  app.route('/auth/google', createGoogleAuthRouter({ db: options?.db, ...options?.googleAuth }))
 
   app.use('/api/*', createBearerAuthMiddleware(options?.db))
   app.route('/api/pair', createPairRouter({ db: options?.db, ...options?.pair }))
@@ -50,6 +55,7 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
     createMsgRouter({
       db: options?.db,
       sendTelegramMessage: options?.sendTelegramMessage,
+      calendarClient: options?.calendarClient,
     }),
   )
   app.route('/api/stream', createStreamRouter())

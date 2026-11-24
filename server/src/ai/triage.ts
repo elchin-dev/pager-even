@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { CalendarSlot } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
 import { toLens } from '../lib/translit.js'
 import type { LlmProvider } from './provider.js'
@@ -26,6 +27,7 @@ export interface TriageInput {
   recentMessages: Array<{ fromName: string; text: string; receivedAt: number }>
   tz: string
   nowMs?: number
+  freeSlots?: CalendarSlot[]
 }
 
 const TRIAGE_SYSTEM_PROMPT = `You are Pager, an AI triage assistant for smart glasses (Even Realities G2).
@@ -56,7 +58,7 @@ Rules:
   - If priority is "urgent" or "needs_reply", provide 3 distinct, natural, short replies in the sender's language ("text").
   - If priority is "fyi" or "ignore", you may return 0 to 3 short drafts.
   - For every draft, "lens" must be <= 32 chars in ASCII/Latin-1 (transliterate non-Latin scripts into Latin).
-  - Always set "slot" to null during triage.
+  - If intent is "schedule" and "Available calendar slots" are provided, use 2-3 of those exact slots in drafts: set "slot" to the slot's exact ISO start string, and keep "lens" <= 27 chars (e.g. "Tomorrow 15:00 works"). Otherwise set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
 
 export function buildFallbackTriage(input: { text: string; fromName: string }): TriageResult {
@@ -84,20 +86,39 @@ export function buildFallbackTriage(input: { text: string; fromName: string }): 
   }
 }
 
-function normalizeTriageResult(raw: TriageResult, fallbackInput: { text: string; fromName: string }): TriageResult {
+function normalizeTriageResult(
+  raw: TriageResult,
+  fallbackInput: { text: string; fromName: string; freeSlots?: CalendarSlot[] },
+): TriageResult {
   const gist = toLens(raw.gist, 40) || toLens(fallbackInput.text || fallbackInput.fromName, 40) || 'New message'
-  const drafts = raw.drafts.slice(0, 3).map((d) => ({
-    text: d.text.trim(),
-    lens: toLens(d.lens || d.text, 32) || toLens(d.text, 32) || 'Reply',
-    slot: null,
-  }))
+  const allowedSlots = new Set((fallbackInput.freeSlots ?? []).map((s) => s.startIso))
+  let drafts = raw.drafts.slice(0, 3).map((d) => {
+    const validSlot =
+      d.slot && (allowedSlots.size === 0 || allowedSlots.has(d.slot)) ? d.slot : null
+    return {
+      text: d.text.trim(),
+      lens: toLens(d.lens || d.text, validSlot ? 27 : 32) || toLens(d.text, 32) || 'Reply',
+      slot: validSlot,
+    }
+  })
 
   if ((raw.priority === 'urgent' || raw.priority === 'needs_reply') && drafts.length === 0) {
-    return {
-      ...raw,
-      gist,
-      drafts: buildFallbackTriage(fallbackInput).drafts,
-    }
+    drafts = buildFallbackTriage(fallbackInput).drafts
+  }
+
+  if (
+    raw.intent === 'schedule' &&
+    fallbackInput.freeSlots &&
+    fallbackInput.freeSlots.length > 0 &&
+    drafts.every((d) => d.slot === null)
+  ) {
+    const slotDrafts: TriageDraft[] = fallbackInput.freeSlots.slice(0, 2).map((s, idx) => ({
+      text: idx === 0 ? `${s.label} works for me` : `How about ${s.label}?`,
+      lens: toLens(idx === 0 ? `${s.label} works` : `${s.label}?`, 27) || s.label,
+      slot: s.startIso,
+    }))
+    const remaining = drafts.slice(0, Math.max(0, 3 - slotDrafts.length))
+    drafts = [...slotDrafts, ...remaining]
   }
 
   return {
@@ -113,11 +134,15 @@ export function buildTriageUserPrompt(input: TriageInput): string {
     .slice(-5)
     .map((m) => `- ${m.fromName}: ${m.text}`)
     .join('\n')
+  const slotLines = (input.freeSlots ?? [])
+    .map((s) => `- ${s.label} (${s.startIso})`)
+    .join('\n')
 
   return [
     `Current UTC time: ${nowIso}`,
     `User timezone: ${input.tz}`,
     `Sender: ${input.fromName}`,
+    slotLines ? `Available calendar slots:\n${slotLines}` : '',
     historyLines ? `Recent chat messages:\n${historyLines}` : '',
     `Latest incoming message:\n${input.text || '[media]'}`,
   ]
@@ -146,7 +171,11 @@ export async function triageMessage(
     })
 
     return {
-      result: normalizeTriageResult(raw, input),
+      result: normalizeTriageResult(raw, {
+        text: input.text,
+        fromName: input.fromName,
+        freeSlots: input.freeSlots,
+      }),
       usedFallback: false,
       providerId: provider.id,
     }

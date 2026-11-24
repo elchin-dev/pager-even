@@ -4,8 +4,15 @@ import type { BusinessConnection, Update, User } from 'grammy/types'
 import { getProviderForUser, type LlmProvider } from '../ai/provider.js'
 import { triageMessage } from '../ai/triage.js'
 import { getDb, type AppDb } from '../db/index.js'
-import { aiSettings, devices, googleAccounts, messages, pairCodes, users } from '../db/schema.js'
+import { aiSettings, devices, googleAccounts, linkTokens, messages, pairCodes, users } from '../db/schema.js'
+import { decryptSecret, generateLinkToken, sha256Hex } from '../lib/crypto.js'
 import { publishUserEvent } from '../lib/events.js'
+import {
+  computeFreeSlots,
+  createDefaultGoogleCalendarClient,
+  type CalendarSlot,
+  type GoogleCalendarClient,
+} from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
 
 export const ALLOWED_WEBHOOK_UPDATES: ReadonlyArray<Exclude<keyof Update, 'update_id'>> = [
@@ -18,7 +25,15 @@ export const ALLOWED_WEBHOOK_UPDATES: ReadonlyArray<Exclude<keyof Update, 'updat
 ]
 
 const MESSAGE_TTL_MS = 48 * 60 * 60 * 1000
+const LINK_TOKEN_TTL_MS = 10 * 60 * 1000
 const DEFAULT_BOT_USERNAME = 'pager_even_bot'
+
+function resolvePublicBaseUrl(): string {
+  const fromEnv = process.env.PUBLIC_BASE_URL?.trim()
+  if (fromEnv) return fromEnv.replace(/\/+$/, '')
+  const port = process.env.PORT?.trim() || '8787'
+  return `http://localhost:${port}`
+}
 
 let cachedBotUsername: string | null = null
 
@@ -178,11 +193,13 @@ export function createBot(
     db?: AppDb
     botConfig?: BotConfig<Context>
     getProvider?: (userId: number) => LlmProvider | null
+    calendarClient?: GoogleCalendarClient
   },
 ): Bot {
   const db = options?.db ?? getDb()
   const resolveProvider =
     options?.getProvider ?? ((userId: number) => getProviderForUser(userId, { db }))
+  const calendarClient = options?.calendarClient ?? createDefaultGoogleCalendarClient()
   const bot = new Bot(token, options?.botConfig)
 
   async function resolveBotUsername(ctx: Context): Promise<string> {
@@ -252,6 +269,35 @@ export function createBot(
     })
 
     await ctx.reply('Все устройства отвязаны ✓')
+  })
+
+  bot.command('google', async (ctx) => {
+    const from = ctx.from
+    if (!from) return
+
+    const user = upsertTgUser(db, from)
+    const rawToken = generateLinkToken()
+    const now = Date.now()
+
+    db.insert(linkTokens)
+      .values({
+        tokenHash: sha256Hex(rawToken),
+        userId: user.id,
+        purpose: 'google',
+        expiresAt: now + LINK_TOKEN_TTL_MS,
+        usedAt: null,
+      })
+      .run()
+
+    const url = `${resolvePublicBaseUrl()}/auth/google/start?t=${encodeURIComponent(rawToken)}`
+    logger.info('google_link_issued', {
+      updateId: ctx.update.update_id,
+      userId: user.id,
+    })
+
+    await ctx.reply(
+      `Откройте ссылку в обычном браузере, чтобы подключить Google Calendar (действует 10 минут):\n${url}`,
+    )
   })
 
   bot.on('message:text', async (ctx) => {
@@ -372,6 +418,34 @@ export function createBot(
         .all()
         .reverse()
 
+      let freeSlots: CalendarSlot[] = []
+      const googleAcc = db
+        .select()
+        .from(googleAccounts)
+        .where(eq(googleAccounts.userId, owner.id))
+        .get()
+
+      if (googleAcc) {
+        try {
+          const refreshToken = decryptSecret(googleAcc.refreshTokenEnc)
+          const busyIntervals = await calendarClient.listBusyIntervals({
+            refreshToken,
+            timeMinIso: new Date(now).toISOString(),
+            timeMaxIso: new Date(now + 3 * 24 * 60 * 60 * 1000).toISOString(),
+          })
+          freeSlots = computeFreeSlots({
+            busyIntervals,
+            nowMs: now,
+            tz: owner.tz,
+          })
+        } catch (err) {
+          logger.warn('google_calendar_slots_failed', {
+            userId: owner.id,
+            errorName: err instanceof Error ? err.name : 'unknown',
+          })
+        }
+      }
+
       const { result: triage, usedFallback, providerId } = await triageMessage(
         {
           fromName: formatDisplayName(msg.from),
@@ -379,6 +453,7 @@ export function createBot(
           recentMessages: recentRows.slice(0, -1),
           tz: owner.tz,
           nowMs: now,
+          freeSlots,
         },
         resolveProvider(owner.id),
       )

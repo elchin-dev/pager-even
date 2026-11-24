@@ -4,7 +4,12 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { buildFallbackTriage, triageResultSchema, type TriageResult } from '../ai/triage.js'
 import { getDb, type AppDb } from '../db/index.js'
-import { actions, messages, users } from '../db/schema.js'
+import { actions, googleAccounts, messages, users } from '../db/schema.js'
+import { decryptSecret } from '../lib/crypto.js'
+import {
+  createDefaultGoogleCalendarClient,
+  type GoogleCalendarClient,
+} from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
 import { toLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
@@ -15,6 +20,7 @@ const sendBodySchema = z
   .object({
     draftIndex: z.number().int().min(0).max(2).optional(),
     text: z.string().trim().min(1).max(4000).optional(),
+    createEvent: z.boolean().optional(),
   })
   .refine((val) => val.draftIndex !== undefined || val.text !== undefined, {
     message: 'draftIndex or text is required',
@@ -57,9 +63,11 @@ function parseAiOrFallback(raw: string | null, fallbackInput: { text: string; fr
 export function createMsgRouter(options?: {
   db?: AppDb
   sendTelegramMessage?: SendTelegramMessageFn
+  calendarClient?: GoogleCalendarClient
 }): Hono<AuthEnv> {
   const router = new Hono<AuthEnv>()
   const sendTelegram = options?.sendTelegramMessage ?? createDefaultSender()
+  const calendarClient = options?.calendarClient ?? createDefaultGoogleCalendarClient()
 
   router.get('/:id', (c) => {
     const parsedId = idParamSchema.safeParse(c.req.param('id'))
@@ -85,10 +93,18 @@ export function createMsgRouter(options?: {
       fromName: row.fromName,
     })
 
-    const drafts = ai.drafts.slice(0, 3).map((d, index) => ({
-      index,
-      lens: toLens(d.lens || d.text, 32) || 'Reply',
-    }))
+    const drafts = ai.drafts.slice(0, 3).map((d, index) => {
+      const slot = d.slot ?? null
+      const hasCal = Boolean(slot)
+      const baseLens = toLens(d.lens || d.text, hasCal ? 27 : 32) || 'Reply'
+      const lens = hasCal && !baseLens.endsWith('+cal') ? `${baseLens} +cal` : baseLens
+      return {
+        index,
+        lens,
+        slot,
+        hasCal,
+      }
+    })
 
     return c.json({
       id: row.id,
@@ -140,6 +156,7 @@ export function createMsgRouter(options?: {
     }
 
     let replyText = parsedBody.data.text
+    let selectedSlot: string | null = null
     if (!replyText && parsedBody.data.draftIndex !== undefined) {
       const ai = parseAiOrFallback(row.aiJson, {
         text: row.text,
@@ -150,6 +167,7 @@ export function createMsgRouter(options?: {
         return c.json({ error: 'invalid_draft_index' }, 400)
       }
       replyText = draft.text
+      selectedSlot = draft.slot ?? null
     }
 
     if (!replyText) {
@@ -205,14 +223,66 @@ export function createMsgRouter(options?: {
         .run()
     })
 
+    let eventCreated = false
+    let eventId: string | undefined
+    if (selectedSlot && parsedBody.data.createEvent !== false) {
+      const googleAcc = db
+        .select()
+        .from(googleAccounts)
+        .where(eq(googleAccounts.userId, authUser.id))
+        .get()
+      const startMs = Date.parse(selectedSlot)
+      if (googleAcc && !Number.isNaN(startMs)) {
+        const startIso = new Date(startMs).toISOString()
+        const endIso = new Date(startMs + 30 * 60_000).toISOString()
+        const summary = `Meeting: ${toLens(row.fromName, 40) || row.fromName}`
+        try {
+          const refreshToken = decryptSecret(googleAcc.refreshTokenEnc)
+          const created = await calendarClient.createEvent({
+            refreshToken,
+            summary,
+            startIso,
+            endIso,
+            timeZone: owner?.tz || 'UTC',
+          })
+          eventCreated = true
+          eventId = created.eventId
+          db.insert(actions)
+            .values({
+              messageId: row.id,
+              type: 'event',
+              payload: JSON.stringify({
+                eventId,
+                startIso,
+                endIso,
+                summary,
+              }),
+              createdAt: Date.now(),
+            })
+            .run()
+        } catch (err) {
+          logger.error('msg_send_calendar_event_failed', {
+            userId: authUser.id,
+            messageId: row.id,
+            errorName: err instanceof Error ? err.name : 'unknown',
+          })
+        }
+      }
+    }
+
     logger.info('msg_replied', {
       userId: authUser.id,
       messageId: row.id,
       chatId: row.chatId,
       replyTgMessageId: sent.messageId,
+      eventCreated,
     })
 
-    return c.json({ ok: true, tgMessageId: sent.messageId })
+    return c.json({
+      ok: true,
+      tgMessageId: sent.messageId,
+      ...(eventCreated ? { eventCreated, eventId } : {}),
+    })
   })
 
   router.post('/:id/skip', (c) => {

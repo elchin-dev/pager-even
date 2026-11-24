@@ -260,7 +260,11 @@ function buildCardPayload(card: MessageCard): {
   }
 }
 
-function buildSendingPayload(draftLens: string, secondsLeft: number): {
+function buildSendingPayload(
+  draftLens: string,
+  secondsLeft: number,
+  hasCal = false,
+): {
   containerTotalNum: number
   textObject: TextContainerProperty[]
   menuObject: MenuContainerProperty
@@ -279,6 +283,7 @@ function buildSendingPayload(draftLens: string, secondsLeft: number): {
     isEventCapture: 0,
   })
 
+  const calLine = hasCal ? '\n+ Calendar event' : ''
   const body = new TextContainerProperty({
     xPosition: 0,
     yPosition: 46,
@@ -289,7 +294,7 @@ function buildSendingPayload(draftLens: string, secondsLeft: number): {
     paddingLength: 4,
     containerID: SENDING_BODY_ID,
     containerName: SENDING_BODY_NAME,
-    content: `${draftLens}\n\n2x tap to cancel`,
+    content: `${draftLens}${calLine}\n\n2x tap to cancel`,
     isEventCapture: 1,
   })
 
@@ -565,7 +570,9 @@ export async function startGlassesApp(): Promise<void> {
     let secondsLeft = SEND_UNDO_SECONDS
 
     await bridge.rebuildPageContainer(
-      new RebuildPageContainer(buildSendingPayload(draft.lens, secondsLeft)),
+      new RebuildPageContainer(
+        buildSendingPayload(draft.lens, secondsLeft, Boolean(draft.hasCal)),
+      ),
     )
     if (disposed || sendCancelled || screen !== 'sending') return
 

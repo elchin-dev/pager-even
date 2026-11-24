@@ -40,6 +40,8 @@ export interface InboxResponse {
 export interface MessageDraft {
   index: number
   lens: string
+  slot?: string | null
+  hasCal?: boolean
 }
 
 export interface MessageCard {
@@ -132,12 +134,12 @@ export async function sendMessageReply(
   bridge: EvenAppBridge,
   id: number,
   draftIndex: number,
-): Promise<{ ok: true; tgMessageId: number }> {
+): Promise<{ ok: true; tgMessageId: number; eventCreated?: boolean }> {
   const res = await apiFetch(bridge, `/api/msg/${id}/send`, {
     method: 'POST',
     body: JSON.stringify({ draftIndex }),
   })
-  return parseJson<{ ok: true; tgMessageId: number }>(res)
+  return parseJson<{ ok: true; tgMessageId: number; eventCreated?: boolean }>(res)
 }
 
 export async function skipMessage(
