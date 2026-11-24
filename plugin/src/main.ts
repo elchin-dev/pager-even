@@ -1,3 +1,3 @@
-import { runSpikeScreen } from './glasses/spike'
+import { startGlassesApp } from './glasses/app'
 
-void runSpikeScreen()
+void startGlassesApp()

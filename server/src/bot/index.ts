@@ -1,8 +1,8 @@
-import { eq } from 'drizzle-orm'
-import { Bot, type BotConfig, type Context } from 'grammy'
+import { and, eq, gt, isNull } from 'drizzle-orm'
+import { Api, Bot, type BotConfig, type Context } from 'grammy'
 import type { BusinessConnection, Update, User } from 'grammy/types'
 import { getDb, type AppDb } from '../db/index.js'
-import { messages, users } from '../db/schema.js'
+import { aiSettings, devices, googleAccounts, messages, pairCodes, users } from '../db/schema.js'
 import { logger } from '../lib/logger.js'
 
 export const ALLOWED_WEBHOOK_UPDATES: ReadonlyArray<Exclude<keyof Update, 'update_id'>> = [
@@ -15,14 +15,38 @@ export const ALLOWED_WEBHOOK_UPDATES: ReadonlyArray<Exclude<keyof Update, 'updat
 ]
 
 const MESSAGE_TTL_MS = 48 * 60 * 60 * 1000
+const DEFAULT_BOT_USERNAME = 'pager_even_bot'
 
-const START_MESSAGE = [
-  'Привет! Это Pager — AI-пейджер для Telegram на очках Even Realities G2.',
-  '',
-  'Чтобы подключить бота к личным чатам:',
-  '• Без Premium: Профиль → Изменить → Автоматизация чатов → @pager_even_bot (выберите чаты и включите право ответа).',
-  '• Telegram Premium: Settings → Telegram Business → Chatbots → @pager_even_bot.',
-].join('\n')
+let cachedBotUsername: string | null = null
+
+export async function getBotUsername(): Promise<string> {
+  const fromEnv = process.env.TELEGRAM_BOT_USERNAME?.trim().replace(/^@/, '')
+  if (fromEnv) return fromEnv
+  if (cachedBotUsername) return cachedBotUsername
+
+  const token = process.env.TELEGRAM_BOT_TOKEN?.trim()
+  if (token) {
+    try {
+      const me = await new Api(token).getMe()
+      if (me.username) {
+        cachedBotUsername = me.username
+        return cachedBotUsername
+      }
+    } catch {
+      logger.warn('bot_username_lookup_failed')
+    }
+  }
+
+  return DEFAULT_BOT_USERNAME
+}
+
+function buildConnectInstructions(botUsername: string): string {
+  return [
+    'Чтобы подключить бота к личным чатам:',
+    `• Без Premium: Профиль → Изменить → Автоматизация чатов → @${botUsername} (выберите чаты и включите право ответа).`,
+    `• Telegram Premium: Settings → Telegram Business → Chatbots → @${botUsername}.`,
+  ].join('\n')
+}
 
 function formatDisplayName(user: User): string {
   const fullName = [user.first_name, user.last_name].filter(Boolean).join(' ').trim()
@@ -32,6 +56,23 @@ function formatDisplayName(user: User): string {
 function extractCanReply(conn: BusinessConnection): boolean {
   const legacyCanReply = (conn as { can_reply?: boolean }).can_reply
   return Boolean(conn.rights?.can_reply ?? legacyCanReply)
+}
+
+function upsertTgUser(db: AppDb, tgUser: User) {
+  const tgName = formatDisplayName(tgUser)
+  db.insert(users)
+    .values({
+      tgUserId: tgUser.id,
+      tgName,
+      createdAt: Date.now(),
+    })
+    .onConflictDoUpdate({
+      target: users.tgUserId,
+      set: { tgName },
+    })
+    .run()
+
+  return db.select().from(users).where(eq(users.tgUserId, tgUser.id)).get()!
 }
 
 function upsertBusinessConnection(db: AppDb, conn: BusinessConnection) {
@@ -65,6 +106,69 @@ function upsertBusinessConnection(db: AppDb, conn: BusinessConnection) {
   return db.select().from(users).where(eq(users.tgUserId, conn.user.id)).get()
 }
 
+async function claimPairCode(
+  db: AppDb,
+  ctx: Context,
+  code: string,
+  botUsername: string,
+): Promise<void> {
+  const from = ctx.from
+  if (!from) return
+
+  const user = upsertTgUser(db, from)
+  const now = Date.now()
+
+  const existing = db.select().from(pairCodes).where(eq(pairCodes.code, code)).get()
+
+  if (
+    !existing ||
+    existing.usedAt !== null ||
+    existing.userId !== null ||
+    existing.expiresAt <= now
+  ) {
+    logger.warn('pair_code_rejected', {
+      updateId: ctx.update.update_id,
+      userId: user.id,
+      tgUserId: from.id,
+    })
+    await ctx.reply('Код недействителен или истёк. Запросите новый код на очках.')
+    return
+  }
+
+  const updateRes = db
+    .update(pairCodes)
+    .set({ userId: user.id })
+    .where(
+      and(
+        eq(pairCodes.code, code),
+        isNull(pairCodes.userId),
+        isNull(pairCodes.usedAt),
+        gt(pairCodes.expiresAt, now),
+      ),
+    )
+    .run()
+
+  if (updateRes.changes !== 1) {
+    await ctx.reply('Код недействителен или уже использован. Запросите новый код на очках.')
+    return
+  }
+
+  logger.info('pair_code_claimed', {
+    updateId: ctx.update.update_id,
+    pairId: existing.pairId,
+    userId: user.id,
+    tgUserId: from.id,
+  })
+
+  const hasBusinessConnection = Boolean(user.businessConnectionId && user.isEnabled)
+  if (hasBusinessConnection) {
+    await ctx.reply('Glasses connected ✓')
+    return
+  }
+
+  await ctx.reply(`Glasses connected ✓\n\n${buildConnectInstructions(botUsername)}`)
+}
+
 export function createBot(
   token: string,
   options?: { db?: AppDb; botConfig?: BotConfig<Context> },
@@ -72,29 +176,82 @@ export function createBot(
   const db = options?.db ?? getDb()
   const bot = new Bot(token, options?.botConfig)
 
-  bot.command('start', async (ctx) => {
-    const from = ctx.from
-    if (from) {
-      const tgName = formatDisplayName(from)
-      db.insert(users)
-        .values({
-          tgUserId: from.id,
-          tgName,
-          createdAt: Date.now(),
-        })
-        .onConflictDoUpdate({
-          target: users.tgUserId,
-          set: { tgName },
-        })
-        .run()
+  async function resolveBotUsername(ctx: Context): Promise<string> {
+    if (ctx.me?.username) {
+      cachedBotUsername = ctx.me.username
+      return ctx.me.username
+    }
+    return getBotUsername()
+  }
 
+  bot.command('start', async (ctx) => {
+    const botUsername = await resolveBotUsername(ctx)
+    const payload = ctx.match.trim()
+
+    if (payload.length > 0) {
+      if (/^\d{6}$/.test(payload)) {
+        await claimPairCode(db, ctx, payload, botUsername)
+        return
+      }
+      await ctx.reply('Неверный формат кода. Отправьте 6 цифр с экрана очков.')
+      return
+    }
+
+    if (ctx.from) {
+      const user = upsertTgUser(db, ctx.from)
       logger.info('bot_start_command', {
         updateId: ctx.update.update_id,
-        tgUserId: from.id,
+        userId: user.id,
+        tgUserId: ctx.from.id,
       })
     }
 
-    await ctx.reply(START_MESSAGE)
+    await ctx.reply(
+      [
+        'Привет! Это Pager — AI-пейджер для Telegram на очках Even Realities G2.',
+        '',
+        buildConnectInstructions(botUsername),
+      ].join('\n'),
+    )
+  })
+
+  bot.command('unpair', async (ctx) => {
+    const from = ctx.from
+    if (!from) return
+
+    const user = db.select().from(users).where(eq(users.tgUserId, from.id)).get()
+    if (!user) {
+      await ctx.reply('Устройства не найдены.')
+      return
+    }
+
+    const now = Date.now()
+    const revokeRes = db
+      .update(devices)
+      .set({ revokedAt: now })
+      .where(and(eq(devices.userId, user.id), isNull(devices.revokedAt)))
+      .run()
+
+    db.delete(googleAccounts).where(eq(googleAccounts.userId, user.id)).run()
+    db.delete(aiSettings).where(eq(aiSettings.userId, user.id)).run()
+
+    logger.info('devices_unpaired', {
+      updateId: ctx.update.update_id,
+      userId: user.id,
+      tgUserId: from.id,
+      revokedCount: revokeRes.changes,
+    })
+
+    await ctx.reply('Все устройства отвязаны ✓')
+  })
+
+  bot.on('message:text', async (ctx) => {
+    if (ctx.chat.type !== 'private') return
+    const text = ctx.message.text.trim()
+    if (!/^\d{6}$/.test(text)) return
+
+    const botUsername = await resolveBotUsername(ctx)
+    await claimPairCode(db, ctx, text, botUsername)
   })
 
   bot.on('business_connection', (ctx) => {

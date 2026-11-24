@@ -28,6 +28,7 @@ npm run bot:set-webhook
 ### Plugin
 ```bash
 cd plugin
+cp .env.example .env
 npm install
 npm run dev
 npm run simulate

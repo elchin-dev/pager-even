@@ -1,14 +1,19 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import type { AppDb } from './db/index.js'
 import { logger } from './lib/logger.js'
+import { createBearerAuthMiddleware, type AuthEnv } from './middleware/auth.js'
+import { createPairRouter, type PairRouterOptions } from './routes/pair.js'
 import { createTgRouter, type TgRouterOptions } from './routes/tg.js'
 
 export interface AppOptions {
   corsOrigins?: string[]
+  db?: AppDb
   tg?: TgRouterOptions
+  pair?: PairRouterOptions
 }
 
-export function createApp(options?: AppOptions): Hono {
+export function createApp(options?: AppOptions): Hono<AuthEnv> {
   const allowedOrigins =
     options?.corsOrigins ??
     (process.env.CORS_ORIGINS ?? '')
@@ -16,12 +21,14 @@ export function createApp(options?: AppOptions): Hono {
       .map((origin) => origin.trim())
       .filter(Boolean)
 
-  const app = new Hono()
+  const app = new Hono<AuthEnv>()
 
   app.use(
     '*',
     cors({
       origin: allowedOrigins,
+      allowHeaders: ['Content-Type', 'Authorization'],
+      allowMethods: ['GET', 'POST', 'OPTIONS'],
     }),
   )
 
@@ -29,7 +36,10 @@ export function createApp(options?: AppOptions): Hono {
     return c.json({ ok: true })
   })
 
-  app.route('/tg', createTgRouter(options?.tg))
+  app.route('/tg', createTgRouter({ db: options?.db, ...options?.tg }))
+
+  app.use('/api/*', createBearerAuthMiddleware(options?.db))
+  app.route('/api/pair', createPairRouter({ db: options?.db, ...options?.pair }))
 
   app.notFound((c) => {
     return c.json({ error: 'not_found' }, 404)
