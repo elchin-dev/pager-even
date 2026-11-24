@@ -3,6 +3,7 @@ import { Api, Bot, type BotConfig, type Context } from 'grammy'
 import type { BusinessConnection, Update, User } from 'grammy/types'
 import { getDb, type AppDb } from '../db/index.js'
 import { aiSettings, devices, googleAccounts, messages, pairCodes, users } from '../db/schema.js'
+import { publishUserEvent } from '../lib/events.js'
 import { logger } from '../lib/logger.js'
 
 export const ALLOWED_WEBHOOK_UPDATES: ReadonlyArray<Exclude<keyof Update, 'update_id'>> = [
@@ -347,6 +348,14 @@ export function createBot(
       tgMessageId: msg.message_id,
       status: isDuplicate ? 'duplicate' : 'new',
     })
+
+    if (!isDuplicate) {
+      publishUserEvent(owner.id, {
+        type: 'inbox',
+        messageId: Number(insertResult.lastInsertRowid),
+        chatId: msg.chat.id,
+      })
+    }
 
     if (!isDuplicate && msg.text?.trim().toLowerCase() === 'ping') {
       try {

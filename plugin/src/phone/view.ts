@@ -68,12 +68,16 @@ export function renderPhoneError(message: string, onRetry: () => void): void {
   document.getElementById('pager-retry-btn')?.addEventListener('click', onRetry)
 }
 
-export function renderPhoneInbox(): void {
+export function renderPhoneInbox(count = 0): void {
   const root = getRoot()
+  const subtitle =
+    count === 0
+      ? 'All clear ✓'
+      : `${count} ${count === 1 ? 'chat needs' : 'chats need'} reply on your G2 glasses.`
   root.innerHTML = `
     <div class="card">
       <h1>Pager connected ✓</h1>
-      <p class="muted">Inbox is active on your G2 glasses display.</p>
+      <p class="muted">${escapeHtml(subtitle)}</p>
     </div>
   `
 }
