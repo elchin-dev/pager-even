@@ -107,15 +107,32 @@ function buildMenuObject(includeCardActions = false): MenuContainerProperty {
   return new MenuContainerProperty({ menuItems })
 }
 
+const utf8Encoder = new TextEncoder()
+
+function clampUtf8(input: string, maxBytes: number): string {
+  if (utf8Encoder.encode(input).length <= maxBytes) {
+    return input
+  }
+  let out = ''
+  for (const ch of input) {
+    const next = out + ch
+    if (utf8Encoder.encode(`${next}…`).length > maxBytes) {
+      return `${out}…`
+    }
+    out = next
+  }
+  return out
+}
+
 function formatInboxListLine(item: InboxItem): string {
   const isUrgent = Boolean(item.urgent || item.priority === 'urgent')
   const raw = `${item.from}  ${item.preview}`
   if (isUrgent) {
-    const trimmed = raw.length > 40 ? `${raw.slice(0, 39)}…` : raw
-    const pad = ' '.repeat(Math.max(2, 42 - trimmed.length))
-    return `${trimmed}${pad}!`.slice(0, 64)
+    const trimmed = clampUtf8(raw, 56)
+    const padCount = Math.max(2, 38 - trimmed.length)
+    return clampUtf8(`${trimmed}${' '.repeat(padCount)}!`, 64)
   }
-  return raw.slice(0, 64)
+  return clampUtf8(raw, 64)
 }
 
 function buildPairingTextContainers(bodyContent: string): TextContainerProperty[] {
@@ -265,7 +282,7 @@ function buildCardPayload(card: MessageCard): {
     isEventCapture: 0,
   })
 
-  const draftItems = card.drafts.slice(0, 3).map((draft) => draft.lens.slice(0, 64))
+  const draftItems = card.drafts.slice(0, 3).map((draft) => clampUtf8(draft.lens, 64))
   draftItems.push('Пропустить')
   const drafts = new ListContainerProperty({
     xPosition: 0,
@@ -484,9 +501,12 @@ export async function startGlassesApp(): Promise<void> {
       }
       lastInboxRebuildAt = Date.now()
       renderPhoneInbox(inboxItems.length)
-      await bridge.rebuildPageContainer(
+      const rebuilt = await bridge.rebuildPageContainer(
         new RebuildPageContainer(buildInboxPayload(inboxItems, feedMode, inboxCounts)),
       )
+      if (!rebuilt) {
+        console.warn('[inbox] rebuildPageContainer returned false', { count: inboxItems.length })
+      }
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         await handleUnauthorized()
