@@ -66,7 +66,8 @@ function buildMenuObject(): MenuContainerProperty {
 }
 
 function formatInboxListLine(item: InboxItem): string {
-  return `${item.from}  ${item.preview}`.slice(0, 64)
+  const prefix = item.priority === 'urgent' ? '! ' : ''
+  return `${prefix}${item.from}  ${item.preview}`.slice(0, 64)
 }
 
 function buildPairingTextContainers(bodyContent: string): TextContainerProperty[] {

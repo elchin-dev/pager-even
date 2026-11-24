@@ -211,3 +211,117 @@ test('GET /api/stream emits SSE inbox event on new business_message', async () =
   controller.abort()
   sqlite.close()
 })
+
+test('GET /api/inbox filters out ignore/fyi messages and sorts urgent above needs_reply', async () => {
+  const { sqlite, db, app, token } = setupAppWithUser()
+  const now = Date.now()
+
+  // 1) ignore message
+  db.insert(messages)
+    .values({
+      userId: 1,
+      chatId: 401,
+      tgMessageId: 1,
+      fromTgUserId: 401,
+      fromName: 'Promo Bot',
+      businessConnectionId: 'bc_inbox_1',
+      text: '50% discount today only!',
+      receivedAt: now + 5000,
+      status: 'new',
+      aiJson: JSON.stringify({
+        priority: 'ignore',
+        intent: 'info',
+        gist: 'Promo spam',
+        lang: 'en',
+        drafts: [],
+      }),
+      expiresAt: now + 86_400_000,
+    })
+    .run()
+
+  // 2) fyi message
+  db.insert(messages)
+    .values({
+      userId: 1,
+      chatId: 402,
+      tgMessageId: 2,
+      fromTgUserId: 402,
+      fromName: 'Bob',
+      businessConnectionId: 'bc_inbox_1',
+      text: 'Ok thanks!',
+      receivedAt: now + 4000,
+      status: 'new',
+      aiJson: JSON.stringify({
+        priority: 'fyi',
+        intent: 'info',
+        gist: 'Says ok thanks',
+        lang: 'en',
+        drafts: [],
+      }),
+      expiresAt: now + 86_400_000,
+    })
+    .run()
+
+  // 3) needs_reply (newer timestamp than urgent)
+  db.insert(messages)
+    .values({
+      userId: 1,
+      chatId: 403,
+      tgMessageId: 3,
+      fromTgUserId: 403,
+      fromName: 'Mom',
+      businessConnectionId: 'bc_inbox_1',
+      text: 'Call tonight?',
+      receivedAt: now + 3000,
+      status: 'new',
+      aiJson: JSON.stringify({
+        priority: 'needs_reply',
+        intent: 'reply',
+        gist: 'Call tonight?',
+        lang: 'en',
+        drafts: [{ text: 'Sure', lens: 'Sure', slot: null }],
+      }),
+      expiresAt: now + 86_400_000,
+    })
+    .run()
+
+  // 4) urgent (older timestamp, should still appear FIRST)
+  db.insert(messages)
+    .values({
+      userId: 1,
+      chatId: 404,
+      tgMessageId: 4,
+      fromTgUserId: 404,
+      fromName: 'Aziz K.',
+      businessConnectionId: 'bc_inbox_1',
+      text: 'KP by 17:00?',
+      receivedAt: now + 1000,
+      status: 'new',
+      aiJson: JSON.stringify({
+        priority: 'urgent',
+        intent: 'reply',
+        gist: 'Asks for KP by 17:00',
+        lang: 'en',
+        drafts: [{ text: 'Sending soon', lens: 'Sending soon', slot: null }],
+      }),
+      expiresAt: now + 86_400_000,
+    })
+    .run()
+
+  const res = await app.request('/api/inbox', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.status, 200)
+  const body = (await res.json()) as {
+    items: Array<{ id: number; chatId: number; from: string; preview: string; priority: string }>
+  }
+
+  assert.equal(body.items.length, 2)
+  assert.equal(body.items[0]?.chatId, 404)
+  assert.equal(body.items[0]?.priority, 'urgent')
+  assert.equal(body.items[0]?.preview, 'Asks for KP by 17:00')
+  assert.equal(body.items[1]?.chatId, 403)
+  assert.equal(body.items[1]?.priority, 'needs_reply')
+
+  sqlite.close()
+})

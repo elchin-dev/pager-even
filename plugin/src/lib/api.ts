@@ -30,6 +30,7 @@ export interface InboxItem {
   from: string
   preview: string
   count: number
+  priority?: 'urgent' | 'needs_reply'
 }
 
 export interface InboxResponse {

@@ -1,6 +1,8 @@
-import { and, eq, gt, isNull } from 'drizzle-orm'
+import { and, desc, eq, gt, isNull } from 'drizzle-orm'
 import { Api, Bot, type BotConfig, type Context } from 'grammy'
 import type { BusinessConnection, Update, User } from 'grammy/types'
+import { getProviderForUser, type LlmProvider } from '../ai/provider.js'
+import { triageMessage } from '../ai/triage.js'
 import { getDb, type AppDb } from '../db/index.js'
 import { aiSettings, devices, googleAccounts, messages, pairCodes, users } from '../db/schema.js'
 import { publishUserEvent } from '../lib/events.js'
@@ -172,9 +174,15 @@ async function claimPairCode(
 
 export function createBot(
   token: string,
-  options?: { db?: AppDb; botConfig?: BotConfig<Context> },
+  options?: {
+    db?: AppDb
+    botConfig?: BotConfig<Context>
+    getProvider?: (userId: number) => LlmProvider | null
+  },
 ): Bot {
   const db = options?.db ?? getDb()
+  const resolveProvider =
+    options?.getProvider ?? ((userId: number) => getProviderForUser(userId, { db }))
   const bot = new Bot(token, options?.botConfig)
 
   async function resolveBotUsername(ctx: Context): Promise<string> {
@@ -350,11 +358,53 @@ export function createBot(
     })
 
     if (!isDuplicate) {
-      publishUserEvent(owner.id, {
-        type: 'inbox',
-        messageId: Number(insertResult.lastInsertRowid),
-        chatId: msg.chat.id,
+      const insertedId = Number(insertResult.lastInsertRowid)
+      const recentRows = db
+        .select({
+          fromName: messages.fromName,
+          text: messages.text,
+          receivedAt: messages.receivedAt,
+        })
+        .from(messages)
+        .where(and(eq(messages.userId, owner.id), eq(messages.chatId, msg.chat.id)))
+        .orderBy(desc(messages.receivedAt), desc(messages.id))
+        .limit(5)
+        .all()
+        .reverse()
+
+      const { result: triage, usedFallback, providerId } = await triageMessage(
+        {
+          fromName: formatDisplayName(msg.from),
+          text: messageText,
+          recentMessages: recentRows.slice(0, -1),
+          tz: owner.tz,
+          nowMs: now,
+        },
+        resolveProvider(owner.id),
+      )
+
+      db.update(messages)
+        .set({ aiJson: JSON.stringify(triage) })
+        .where(eq(messages.id, insertedId))
+        .run()
+
+      logger.info('business_message_triaged', {
+        updateId: ctx.update.update_id,
+        userId: owner.id,
+        messageId: insertedId,
+        priority: triage.priority,
+        intent: triage.intent,
+        provider: providerId,
+        usedFallback,
       })
+
+      if (triage.priority === 'urgent' || triage.priority === 'needs_reply') {
+        publishUserEvent(owner.id, {
+          type: 'inbox',
+          messageId: insertedId,
+          chatId: msg.chat.id,
+        })
+      }
     }
 
     if (!isDuplicate && msg.text?.trim().toLowerCase() === 'ping') {
