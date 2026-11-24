@@ -102,17 +102,32 @@ export function buildFallbackTriage(input: {
     }
   }
 
+  const isPing = /^\s*(ало|алло|привет|эй|тут|на связи|hello|hi|hey|ping)\b[?!.\s]*$/iu.test(
+    input.text,
+  )
   const drafts: TriageDraft[] = isCyrillic
-    ? [
-        { text: 'Да, хорошо', lens: 'Да, хорошо', slot: null },
-        { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null },
-        { text: 'Созвонимся позже?', lens: 'Созвонимся позже?', slot: null },
-      ]
-    : [
-        { text: 'Yes, sounds good', lens: 'Yes, sounds good', slot: null },
-        { text: 'Will reply shortly', lens: 'Will reply shortly', slot: null },
-        { text: 'Can we call later?', lens: 'Can we call later?', slot: null },
-      ]
+    ? isPing
+      ? [
+          { text: 'Да, на связи', lens: 'Да, на связи', slot: null },
+          { text: 'Слушаю, что случилось?', lens: 'Слушаю, что случилось?', slot: null },
+          { text: 'Напишу через 10 минут', lens: 'Напишу через 10 минут', slot: null },
+        ]
+      : [
+          { text: 'Да, хорошо', lens: 'Да, хорошо', slot: null },
+          { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null },
+          { text: 'Созвонимся позже?', lens: 'Созвонимся позже?', slot: null },
+        ]
+    : isPing
+      ? [
+          { text: 'Yes, I am here', lens: 'Yes, I am here', slot: null },
+          { text: 'What is up?', lens: 'What is up?', slot: null },
+          { text: 'Back in 10 min', lens: 'Back in 10 min', slot: null },
+        ]
+      : [
+          { text: 'Yes, sounds good', lens: 'Yes, sounds good', slot: null },
+          { text: 'Will reply shortly', lens: 'Will reply shortly', slot: null },
+          { text: 'Can we call later?', lens: 'Can we call later?', slot: null },
+        ]
 
   return {
     priority,

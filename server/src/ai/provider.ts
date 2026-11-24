@@ -84,51 +84,76 @@ export function createGeminiProvider(config: {
     async completeJson<T>(opts: CompleteJsonOptions<T>): Promise<T> {
       return runWithJsonRetry(async (userPrompt) => {
         const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
-        const res = await fetchImpl(endpoint, {
-          method: 'POST',
-          headers: {
-            'x-goog-api-key': config.apiKey,
-            'Content-Type': 'application/json',
+        const body = JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: opts.system }],
           },
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: opts.system }],
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: userPrompt }],
             },
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: userPrompt }],
-              },
-            ],
-            generationConfig: {
-              responseMimeType: 'application/json',
-              temperature: 0.2,
-              maxOutputTokens: opts.maxTokens ?? 600,
-            },
-          }),
-          signal: AbortSignal.timeout(timeoutMs),
+          ],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.2,
+            maxOutputTokens: opts.maxTokens ?? 600,
+          },
         })
 
-        if (!res.ok) {
-          throw new Error(`gemini_http_${res.status}`)
-        }
+        let lastHttpErr: Error | null = null
+        for (let netAttempt = 0; netAttempt < 2; netAttempt += 1) {
+          try {
+            const res = await fetchImpl(endpoint, {
+              method: 'POST',
+              headers: {
+                'x-goog-api-key': config.apiKey,
+                'Content-Type': 'application/json',
+              },
+              body,
+              signal: AbortSignal.timeout(timeoutMs),
+            })
 
-        const data = (await res.json()) as {
-          candidates?: Array<{
-            content?: {
-              parts?: Array<{ text?: string }>
+            if (res.status === 429 || res.status >= 500) {
+              lastHttpErr = new Error(`gemini_http_${res.status}`)
+              if (netAttempt === 0) {
+                await new Promise((r) => setTimeout(r, 400))
+                continue
+              }
+              throw lastHttpErr
             }
-          }>
+
+            if (!res.ok) {
+              throw new Error(`gemini_http_${res.status}`)
+            }
+
+            const data = (await res.json()) as {
+              candidates?: Array<{
+                content?: {
+                  parts?: Array<{ text?: string }>
+                }
+              }>
+            }
+
+            const text = (data.candidates?.[0]?.content?.parts ?? [])
+              .map((part) => part.text ?? '')
+              .join('')
+
+            if (!text) {
+              throw new Error('gemini_empty_response')
+            }
+            return text
+          } catch (err) {
+            const isTimeout = err instanceof Error && err.name === 'TimeoutError'
+            if (isTimeout && netAttempt === 0) {
+              lastHttpErr = err
+              continue
+            }
+            throw err
+          }
         }
 
-        const text = (data.candidates?.[0]?.content?.parts ?? [])
-          .map((part) => part.text ?? '')
-          .join('')
-
-        if (!text) {
-          throw new Error('gemini_empty_response')
-        }
-        return text
+        throw lastHttpErr ?? new Error('gemini_request_failed')
       }, opts)
     },
   }
