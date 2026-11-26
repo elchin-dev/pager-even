@@ -18,7 +18,7 @@ interface RenderedContainer {
   }>
   menuObject?: {
     itemCount?: number
-    items?: Array<{ itemID?: number; itemName?: string }>
+    menuItems?: Array<{ itemID?: number; itemName?: string }>
   }
 }
 
@@ -90,7 +90,7 @@ function validateEvenHubLimits(payload: RenderedContainer, stepLabel: string): v
     }
   }
 
-  const menuItems = payload.menuObject?.items ?? []
+  const menuItems = payload.menuObject?.menuItems ?? []
   for (const m of menuItems) {
     const name = m.itemName ?? ''
     const byteLen = utf8.encode(name).length
@@ -926,6 +926,41 @@ test('E2E Flow 4 & 5 & 6: Conflict Create Meeting (3s undo), Digest Pagination, 
     })
     await flush()
     assert.ok(h.apiCalls.some((c) => c.method === 'POST' && c.path === '/api/promises/1/done'))
+  } finally {
+    await h.restore()
+  }
+})
+
+test('E2E Flow 7: Menu language toggle switches UI between Russian and English', async () => {
+  const h = createTestHarness()
+  try {
+    await startGlassesApp(h.bridge)
+    await flush()
+
+    // Default is RU
+    const homeRu = h.lastRender()
+    assert.match(homeRu.listObject?.[0]?.itemContainer?.itemName?.[0] ?? '', /Сообщения/)
+    assert.ok(
+      (homeRu.menuObject?.menuItems ?? []).some(
+        (m) => m.itemID === 5 && m.itemName === 'Language: EN',
+      ),
+    )
+
+    // Click menu item 5 -> switch to EN
+    h.emitEvent({ menuItemClickEvent: { itemID: 5 } })
+    await flush(50)
+    const homeEn = h.lastRender()
+    assert.match(homeEn.listObject?.[0]?.itemContainer?.itemName?.[0] ?? '', /Messages/)
+    assert.match(homeEn.listObject?.[0]?.itemContainer?.itemName?.[1] ?? '', /Meetings/)
+    assert.ok(
+      (homeEn.menuObject?.menuItems ?? []).some((m) => m.itemID === 5 && m.itemName === 'Язык: RU'),
+    )
+
+    // Click menu item 5 again -> switch back to RU
+    h.emitEvent({ menuItemClickEvent: { itemID: 5 } })
+    await flush(50)
+    const homeRuAgain = h.lastRender()
+    assert.match(homeRuAgain.listObject?.[0]?.itemContainer?.itemName?.[0] ?? '', /Сообщения/)
   } finally {
     await h.restore()
   }

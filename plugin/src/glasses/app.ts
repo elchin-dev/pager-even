@@ -154,7 +154,16 @@ const MENU_REFRESH_ID = 1
 const MENU_HOME_ID = 2
 const MENU_NEW_NOTE_ID = 3
 const MENU_MY_NOTES_ID = 4
+const MENU_LANGUAGE_ID = 5
 const MENU_RECORD_VOICE_ID = 7
+
+const UI_LANG_KEY = 'pager_ui_lang'
+type UiLang = 'ru' | 'en'
+let uiLang: UiLang = 'ru'
+
+function t(ru: string, en: string): string {
+  return uiLang === 'en' ? en : ru
+}
 
 type HomeAction = 'messages' | 'meetings' | 'digest'
 
@@ -202,14 +211,21 @@ function buildMenuObject(includeVoiceReply = false, includeVoiceToggle = false):
   const menuItems: MenuItemProperty[] = []
   if (includeVoiceReply || includeVoiceToggle) {
     menuItems.push(
-      new MenuItemProperty({ itemName: 'Ответить голосом', itemID: MENU_RECORD_VOICE_ID }),
+      new MenuItemProperty({
+        itemName: t('Ответить голосом', 'Voice reply'),
+        itemID: MENU_RECORD_VOICE_ID,
+      }),
     )
   }
   menuItems.push(
-    new MenuItemProperty({ itemName: 'Новая заметка', itemID: MENU_NEW_NOTE_ID }),
-    new MenuItemProperty({ itemName: 'Мои заметки', itemID: MENU_MY_NOTES_ID }),
-    new MenuItemProperty({ itemName: 'Главная', itemID: MENU_HOME_ID }),
-    new MenuItemProperty({ itemName: 'Обновить', itemID: MENU_REFRESH_ID }),
+    new MenuItemProperty({ itemName: t('Новая заметка', 'New note'), itemID: MENU_NEW_NOTE_ID }),
+    new MenuItemProperty({ itemName: t('Мои заметки', 'My notes'), itemID: MENU_MY_NOTES_ID }),
+    new MenuItemProperty({ itemName: t('Главная', 'Home'), itemID: MENU_HOME_ID }),
+    new MenuItemProperty({ itemName: t('Обновить', 'Refresh'), itemID: MENU_REFRESH_ID }),
+    new MenuItemProperty({
+      itemName: uiLang === 'ru' ? 'Language: EN' : 'Язык: RU',
+      itemID: MENU_LANGUAGE_ID,
+    }),
   )
   return new MenuContainerProperty({ menuItems })
 }
@@ -295,20 +311,22 @@ function getHomeActions(home: HomeResponse): Array<{ action: HomeAction; label: 
   const msgRight =
     home.messages.total > 0
       ? home.messages.urgent > 0
-        ? `${home.messages.total} · ${home.messages.urgent} срочное`
+        ? `${home.messages.total} · ${home.messages.urgent} ${t('срочное', 'urgent')}`
         : `${home.messages.total}`
-      : 'нет'
+      : t('нет', 'none')
   const meetRight =
-    home.meetings.todayCount > 0 ? `${home.meetings.todayCount} сегодня` : 'нет'
+    home.meetings.todayCount > 0
+      ? `${home.meetings.todayCount} ${t('сегодня', 'today')}`
+      : t('нет', 'none')
 
   const items: Array<{ action: HomeAction; label: string }> = [
-    { action: 'messages', label: formatSplitListLine('Сообщения', msgRight) },
-    { action: 'meetings', label: formatSplitListLine('Встречи', meetRight) },
+    { action: 'messages', label: formatSplitListLine(t('Сообщения', 'Messages'), msgRight) },
+    { action: 'meetings', label: formatSplitListLine(t('Встречи', 'Meetings'), meetRight) },
   ]
   if (home.digest.enabled) {
     items.push({
       action: 'digest',
-      label: formatSplitListLine('Дайджест', String(home.digest.count)),
+      label: formatSplitListLine(t('Дайджест', 'Digest'), String(home.digest.count)),
     })
   }
   return items
@@ -334,7 +352,7 @@ function buildHomePayload(
       paddingLength: 4,
       containerID: HOME_HEADER_ID,
       containerName: HOME_HEADER_NAME,
-      content: 'Главная',
+      content: t('Главная', 'Home'),
       isEventCapture: 0,
     })
     const body = new TextContainerProperty({
@@ -347,7 +365,7 @@ function buildHomePayload(
       paddingLength: 4,
       containerID: HOME_SUMMARY_ID,
       containerName: HOME_SUMMARY_NAME,
-      content: overrideStatusText ?? 'Загрузка…',
+      content: overrideStatusText ?? t('Загрузка…', 'Loading…'),
       isEventCapture: 1,
     })
     return {
@@ -374,7 +392,7 @@ function buildHomePayload(
   const hasNewMessages = home.messages.total > 0
   const summaryText = hasNewMessages
     ? home.messages.senders.map((s) => `${s.name} ${s.count}`).join(' · ')
-    : `Всё тихо\n${home.nextMeetingLine ?? 'встреч нет'}`
+    : `${t('Всё тихо', 'All quiet')}\n${home.nextMeetingLine ?? t('встреч нет', 'no meetings')}`
 
   const summary = new TextContainerProperty({
     xPosition: 0,
@@ -438,7 +456,7 @@ function buildMeetingsPayload(
     paddingLength: 4,
     containerID: MEETINGS_HEADER_ID,
     containerName: MEETINGS_HEADER_NAME,
-    content: count > 0 ? `Встречи · сегодня ${count}` : 'Встречи · сегодня',
+    content: count > 0 ? t(`Встречи · сегодня ${count}`, `Meetings · today ${count}`) : t('Встречи · сегодня', 'Meetings · today'),
     isEventCapture: 0,
   })
 
@@ -524,10 +542,10 @@ function buildMeetingsPayload(
       itemName: items.map((ev) => {
         const left = `${ev.startTime}  ${ev.title}`
         if (ev.isTomorrow) {
-          return formatSplitListLine(left, 'завтра')
+          return formatSplitListLine(left, t('завтра', 'tomorrow'))
         }
         if (ev.minutesUntil !== null && ev.minutesUntil < 60) {
-          return formatSplitListLine(left, `через ${ev.minutesUntil} мин`)
+          return formatSplitListLine(left, t(`через ${ev.minutesUntil} мин`, `in ${ev.minutesUntil} min`))
         }
         return clampUtf8(left, 63)
       }),
@@ -547,12 +565,12 @@ type MeetingBriefAction = 'notes' | 'late' | 'reschedule'
 function getMeetingBriefActions(brief: MeetingBrief): Array<{ action: MeetingBriefAction; label: string }> {
   const actions: Array<{ action: MeetingBriefAction; label: string }> = []
   if (brief.notesCount > 0) {
-    actions.push({ action: 'notes', label: clampUtf8(`Заметки (${brief.notesCount})`, 63) })
+    actions.push({ action: 'notes', label: clampUtf8(t(`Заметки (${brief.notesCount})`, `Notes (${brief.notesCount})`), 63) })
   }
   if (brief.canSendLate) {
-    actions.push({ action: 'late', label: clampUtf8('Опаздываю на 5 мин', 63) })
+    actions.push({ action: 'late', label: clampUtf8(t('Опаздываю на 5 мин', 'Late 5 min'), 63) })
   }
-  actions.push({ action: 'reschedule', label: clampUtf8('Перенести +30 мин', 63) })
+  actions.push({ action: 'reschedule', label: clampUtf8(t('Перенести +30 мин', 'Move +30 min'), 63) })
   return actions
 }
 
@@ -622,12 +640,12 @@ function buildMeetingCardPayload(brief: MeetingBrief): {
 
 function getReminderActions(reminder: GlassesReminderEvent): string[] {
   if (reminder.kind === 'task') {
-    return ['Готово', '+1 час']
+    return [t('Готово', 'Done'), t('+1 час', '+1 hour')]
   }
   if (reminder.kind === 'promise') {
-    return ['Готово', 'Открыть чат', '+1 час']
+    return [t('Готово', 'Done'), t('Открыть чат', 'Open chat'), t('+1 час', '+1 hour')]
   }
-  return ['Открыть бриф', 'Позже']
+  return [t('Открыть бриф', 'Open brief'), t('Позже', 'Later')]
 }
 
 function buildReminderOverlayPayload(reminder: GlassesReminderEvent): {
@@ -1060,7 +1078,7 @@ function buildCardPayload(card: MessageCard): {
   })
 
   const draftItems = card.drafts.slice(0, 4).map((draft) => clampUtf8(draft.lens, 63))
-  draftItems.push('Пропустить')
+  draftItems.push(t('Пропустить', 'Skip'))
   const drafts = new ListContainerProperty({
     xPosition: 0,
     yPosition: 114,
@@ -1873,8 +1891,8 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
       if (disposed || screen !== 'notes-list') return
       notesList = res.items
       const headerText = meetingEventId
-        ? `Заметки встречи (${notesList.length})`
-        : `Мои заметки (${notesList.length})`
+        ? t(`Заметки встречи (${notesList.length})`, `Meeting notes (${notesList.length})`)
+        : t(`Мои заметки (${notesList.length})`, `My notes (${notesList.length})`)
       await bridge.rebuildPageContainer(
         new RebuildPageContainer(
           buildGenericListPagePayload({
@@ -1883,7 +1901,10 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
               const prefix = n.remindTime && !n.taskCompleted ? `[${n.remindTime}] ` : ''
               return `${prefix}${n.text}`
             }),
-            emptyText: 'Заметок пока нет\n\nМеню -> Новая заметка\n2x тап — назад',
+            emptyText: t(
+              'Заметок пока нет\n\nМеню -> Новая заметка\n2x тап — назад',
+              'No notes yet\n\nMenu -> New note\n2x tap — back',
+            ),
           }),
         ),
       )
@@ -1927,19 +1948,19 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     if (!noteDraftAnalysis) return []
     const items: Array<{ id: string; label: string }> = []
     if (noteDraftAnalysis.taskReminder) {
-      items.push({ id: 'save_rem', label: 'Сохранить с напоминанием' })
-      items.push({ id: 'save_no_rem', label: 'Без напоминания' })
+      items.push({ id: 'save_rem', label: t('Сохранить с напоминанием', 'Save + reminder') })
+      items.push({ id: 'save_no_rem', label: t('Без напоминания', 'Without reminder') })
     } else {
-      items.push({ id: 'save_no_rem', label: 'Сохранить' })
+      items.push({ id: 'save_no_rem', label: t('Сохранить', 'Save') })
     }
     if (noteDraftAnalysis.matchedMeeting && !noteDraftBindMeeting) {
       items.push({
         id: 'bind_matched',
-        label: `Привязать: ${noteDraftAnalysis.matchedMeeting.label}`,
+        label: `${t('Привязать', 'Link')}: ${noteDraftAnalysis.matchedMeeting.label}`,
       })
     }
-    items.push({ id: 'rerecord', label: 'Записать заново' })
-    items.push({ id: 'discard', label: 'Удалить' })
+    items.push({ id: 'rerecord', label: t('Записать заново', 'Re-record') })
+    items.push({ id: 'discard', label: t('Удалить', 'Delete') })
     return items
   }
 
@@ -1978,9 +1999,13 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
         buildGenericThreePartPayload({
-          headerText: 'Заметка',
+          headerText: t('Заметка', 'Note'),
           bodyText,
-          items: ['Дописать голосом', 'Привязать к встрече', 'Удалить'],
+          items: [
+            t('Дописать голосом', 'Append voice'),
+            t('Привязать к встрече', 'Link to meeting'),
+            t('Удалить', 'Delete'),
+          ],
         }),
       ),
     )
@@ -2124,16 +2149,19 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     newMeetingActionIndex = 0
     screen = 'new-meeting'
     const statusText = pm.isFree
-      ? 'ты свободен'
-      : `!! занят: ${pm.conflict?.title ?? 'встреча'}`
-    const items = ['Создать + бриф голосом', 'Создать без брифа']
+      ? t('ты свободен', 'you are free')
+      : `${t('!! занят', '!! busy')}: ${pm.conflict?.title ?? t('встреча', 'meeting')}`
+    const items = [
+      t('Создать + бриф голосом', 'Create + voice brief'),
+      t('Создать без брифа', 'Create without brief'),
+    ]
     if (pm.altSlots.length > 0) {
-      items.push('Другое время')
+      items.push(t('Другое время', 'Other time'))
     }
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
         buildGenericThreePartPayload({
-          headerText: 'Новая встреча',
+          headerText: t('Новая встреча', 'New meeting'),
           bodyText: `${pm.title}\n${pm.displayWhen} · ${statusText}`,
           items,
         }),
@@ -3053,6 +3081,9 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     }, POLL_INTERVAL_MS)
   }
 
+  const savedLang = await bridge.getLocalStorage(UI_LANG_KEY)
+  uiLang = savedLang === 'en' ? 'en' : 'ru'
+
   const storedToken = await getStoredDeviceToken(bridge)
 
   if (storedToken) {
@@ -3269,6 +3300,42 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
           activeCard
         ) {
           void startVoiceRecording('menu')
+        }
+        return
+      }
+      if (itemId === MENU_LANGUAGE_ID) {
+        uiLang = uiLang === 'ru' ? 'en' : 'ru'
+        void bridge.setLocalStorage(UI_LANG_KEY, uiLang)
+        if (screen === 'home' || screen === 'home-error') {
+          lastHomeSignature = ''
+          scheduleHomeRefresh(true)
+        } else if (screen === 'meetings') {
+          void openMeetingsFromHome()
+        } else if (screen === 'meeting-card' && activeMeetingBrief) {
+          void bridge.rebuildPageContainer(
+            new RebuildPageContainer(buildMeetingCardPayload(activeMeetingBrief)),
+          )
+        } else if (screen === 'notes-list') {
+          void openNotesList(notesFilterMeetingId)
+        } else if (screen === 'note-review') {
+          void renderNoteReviewScreen()
+        } else if (screen === 'note-detail' && activeNote) {
+          void openNoteDetail(activeNote)
+        } else if (screen === 'digest-list') {
+          void openDigestListScreen()
+        } else if (screen === 'new-meeting' && activeProposedMeeting) {
+          void openNewMeetingScreen(activeProposedMeeting, proposedMeetingChatId)
+        } else if (screen === 'inbox' || screen === 'inbox-error') {
+          lastInboxSignature = ''
+          scheduleInboxRefresh(true)
+        } else if (screen === 'card' && activeCard) {
+          void backFromCardFull()
+        } else if (screen === 'card-full' && activeCard) {
+          void openCardFull()
+        } else if (screen === 'transcript-pages' && activeCard) {
+          void openTranscriptPages()
+        } else {
+          void returnToHome()
         }
         return
       }
