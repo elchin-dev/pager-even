@@ -730,32 +730,29 @@ test('E2E Flow 2: Meetings -> Brief -> Reschedule +30 min with 3s undo cancellat
     assert.match(meetingsList[0]!, /через 10 мин/)
     assert.match(meetingsList[1]!, /завтра/)
 
-    // Tap Standup (index 0) -> meeting-card
+    // Tap Standup (index 0) -> full-screen meeting-brief first
     h.emitEvent({
       listEvent: { currentSelectItemIndex: 0, eventType: OsEventTypeList.CLICK_EVENT },
     })
     await flush()
     const brief = h.lastRender()
     assert.equal(brief.textObject?.[0]?.content, 'Standup')
-    assert.match(brief.textObject?.[1]?.content ?? '', /15:00-15:30/)
-    const actions = brief.listObject?.[0]?.itemContainer?.itemName ?? []
-    assert.deepEqual(actions, ['Заметки (2)', 'Опаздываю на 5 мин', 'Перенести +30 мин'])
+    assert.equal(brief.textObject?.[1]?.containerName, 'divider')
+    assert.match(brief.textObject?.[2]?.content ?? '', /15:00-15:30/)
+    assert.match(brief.textObject?.[2]?.content ?? '', /Обсудить релиз G2/)
 
-    // Tap "Заметки (2)" (index 0) -> MUST open notes list IMMEDIATELY without 3s undo countdown!
+    // Tap brief -> opens meeting-card action panel (only Late 5 min & Move +30 min, no Notes button)
     h.emitEvent({
-      listEvent: { currentSelectItemIndex: 0, eventType: OsEventTypeList.CLICK_EVENT },
+      textEvent: { eventType: OsEventTypeList.CLICK_EVENT },
     })
-    await flush(30)
-    const meetingNotes = h.lastRender()
-    assert.match(meetingNotes.textObject?.[0]?.content ?? '', /^Заметки встречи/)
-    // 2x tap back to meeting-card
-    h.emitEvent({ sysEvent: { eventType: OsEventTypeList.DOUBLE_CLICK_EVENT } })
-    await flush(30)
-    assert.equal(h.lastRender().textObject?.[0]?.content, 'Standup')
+    await flush()
+    const actionPanel = h.lastRender()
+    const actions = actionPanel.listObject?.[0]?.itemContainer?.itemName ?? []
+    assert.deepEqual(actions, ['Опаздываю на 5 мин', 'Перенести +30 мин'])
 
-    // Tap "Перенести +30 мин" (index 2) -> 3s undo screen
+    // Tap "Перенести +30 мин" (index 1) -> 3s undo screen
     h.emitEvent({
-      listEvent: { currentSelectItemIndex: 2, eventType: OsEventTypeList.CLICK_EVENT },
+      listEvent: { currentSelectItemIndex: 1, eventType: OsEventTypeList.CLICK_EVENT },
     })
     await flush(50)
     const undoScreen = h.lastRender()

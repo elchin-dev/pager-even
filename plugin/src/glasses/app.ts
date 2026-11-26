@@ -175,6 +175,7 @@ type AppScreen =
   | 'home'
   | 'home-error'
   | 'meetings'
+  | 'meeting-brief'
   | 'meeting-card'
   | 'meeting-action-undo'
   | 'new-meeting'
@@ -566,18 +567,58 @@ function buildMeetingsPayload(
   }
 }
 
-type MeetingBriefAction = 'notes' | 'late' | 'reschedule'
+type MeetingBriefAction = 'late' | 'reschedule'
 
 function getMeetingBriefActions(brief: MeetingBrief): Array<{ action: MeetingBriefAction; label: string }> {
   const actions: Array<{ action: MeetingBriefAction; label: string }> = []
-  if (brief.notesCount > 0) {
-    actions.push({ action: 'notes', label: clampUtf8(t(`Заметки (${brief.notesCount})`, `Notes (${brief.notesCount})`), 63) })
-  }
   if (brief.canSendLate) {
     actions.push({ action: 'late', label: clampUtf8(t('Опаздываю на 5 мин', 'Late 5 min'), 63) })
   }
   actions.push({ action: 'reschedule', label: clampUtf8(t('Перенести +30 мин', 'Move +30 min'), 63) })
   return actions
+}
+
+function buildMeetingBriefPayload(brief: MeetingBrief): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const timeSuffix = brief.isTomorrow
+    ? t(' · завтра', ' · tomorrow')
+    : brief.minutesUntil !== null && brief.minutesUntil < 60
+      ? t(` · через ${brief.minutesUntil} мин`, ` · in ${brief.minutesUntil} min`)
+      : ''
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: MEETINGS_HEADER_ID,
+    containerName: MEETINGS_HEADER_NAME,
+    content: clampUtf8(brief.title, 63),
+    isEventCapture: 0,
+  })
+  const body = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 50,
+    width: 576,
+    height: 238,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: MEETING_BRIEF_BODY_ID,
+    containerName: MEETING_BRIEF_BODY_NAME,
+    content: `${brief.startTime}-${brief.endTime}${timeSuffix}\n\n${brief.summary}`,
+    isEventCapture: 1,
+  })
+  return {
+    containerTotalNum: 3,
+    textObject: [header, buildDividerContainer(44), body],
+    menuObject: buildMenuObject(false),
+  }
 }
 
 function buildMeetingCardPayload(brief: MeetingBrief): {
@@ -1706,9 +1747,9 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
       if (disposed) return
       activeMeetingBrief = brief
       meetingActionIndex = 0
-      screen = 'meeting-card'
+      screen = 'meeting-brief'
       await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildMeetingCardPayload(brief)),
+        new RebuildPageContainer(buildMeetingBriefPayload(brief)),
       )
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -1727,10 +1768,6 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     action: MeetingBriefAction,
   ): Promise<void> {
     if (disposed || isActionInFlight) return
-    if (action === 'notes') {
-      await openNotesList(eventId)
-      return
-    }
     isActionInFlight = true
     try {
       if (action === 'late') {
@@ -3268,6 +3305,17 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
         return
       }
       if (screen === 'meeting-card') {
+        if (activeMeetingBrief) {
+          screen = 'meeting-brief'
+          void bridge.rebuildPageContainer(
+            new RebuildPageContainer(buildMeetingBriefPayload(activeMeetingBrief)),
+          )
+        } else {
+          void openMeetingsFromHome()
+        }
+        return
+      }
+      if (screen === 'meeting-brief') {
         void openMeetingsFromHome()
         return
       }
@@ -3687,13 +3735,20 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
         return
       }
 
+      if (screen === 'meeting-brief' && activeMeetingBrief) {
+        screen = 'meeting-card'
+        meetingActionIndex = 0
+        void bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildMeetingCardPayload(activeMeetingBrief)),
+        )
+        return
+      }
+
       if (screen === 'meeting-card' && activeMeetingBrief) {
         const actions = getMeetingBriefActions(activeMeetingBrief)
         const idx = event.listEvent?.currentSelectItemIndex ?? meetingActionIndex
         const chosen = actions[idx]
-        if (chosen?.action === 'notes') {
-          void openNotesList(activeMeetingBrief.id)
-        } else if (chosen) {
+        if (chosen) {
           void startMeetingActionUndo(chosen.action)
         }
         return

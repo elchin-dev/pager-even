@@ -23,7 +23,7 @@ import type { SendTelegramMessageFn } from '../routes/msg.js'
 
 const DEFAULT_REMINDER_MINUTES = 10
 const BRIEF_SCHEMA = z.object({
-  summary: z.string().min(1).max(200),
+  summary: z.string().min(1).max(320),
 })
 
 export interface MatchedAttendeeChat {
@@ -245,7 +245,7 @@ export async function generateMeetingBriefSummary(params: {
   if (fallbackParts.length === 0 && chatSnippets.length > 0) {
     fallbackParts.push(chatSnippets[chatSnippets.length - 1] ?? '')
   }
-  const fallbackText = toOriginalLens(fallbackParts.filter(Boolean).join(' · '), 130)
+  const fallbackText = toOriginalLens(fallbackParts.filter(Boolean).join('\n'), 240)
 
   const provider =
     params.provider !== undefined
@@ -258,21 +258,21 @@ export async function generateMeetingBriefSummary(params: {
 
   try {
     const res = await provider.completeJson({
-      system: `You summarize a calendar meeting brief for smart glasses in 1-2 short lines (<= 130 chars total) in Russian (keep original names/terms).
+      system: `You summarize a calendar meeting brief for smart glasses (<= 240 chars total) in Russian (keep original names/terms).
 Combine the event description, attached/matching user notes (MUST include key points from notes if present), and recent Telegram chat context with attendees (if provided).
 Output ONLY raw JSON: {"summary": string}. No markdown, no quotes around the summary.`,
       user: [
         `Event title: ${params.event.summary}`,
-        eventDescription ? `Description: ${eventDescription.slice(0, 400)}` : '',
+        eventDescription ? `Description: ${eventDescription.slice(0, 500)}` : '',
         noteSnippets.length > 0 ? `User notes for this meeting:\n${noteSnippets.join('\n')}` : '',
         chatSnippets.length > 0 ? `Recent Telegram messages:\n${chatSnippets.join('\n')}` : '',
       ]
         .filter(Boolean)
         .join('\n\n'),
       schema: BRIEF_SCHEMA,
-      maxTokens: 140,
+      maxTokens: 180,
     })
-    return toOriginalLens(res.summary, 130) || fallbackText || 'Без описания'
+    return toOriginalLens(res.summary, 240) || fallbackText || 'Без описания'
   } catch {
     return fallbackText || 'Без описания'
   }
