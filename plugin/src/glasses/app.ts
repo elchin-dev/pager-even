@@ -198,11 +198,11 @@ function formatInboxListLine(item: InboxItem): string {
     const trimmed = clampVisualAndUtf8(raw, 56, 56)
     const targetUnits = 62
     const desiredSpaces = Math.max(2, Math.round(targetUnits - visualWidthUnits(trimmed)))
-    const maxSpacesByBytes = Math.max(1, 63 - utf8Encoder.encode(trimmed).length)
+    const maxSpacesByBytes = Math.max(1, 62 - utf8Encoder.encode(trimmed).length)
     const padCount = Math.min(desiredSpaces, maxSpacesByBytes)
-    return clampUtf8(`${trimmed}${' '.repeat(padCount)}!`, 64)
+    return clampUtf8(`${trimmed}${' '.repeat(padCount)}!`, 63)
   }
-  return clampUtf8(raw, 64)
+  return clampUtf8(raw, 63)
 }
 
 function buildPairingTextContainers(bodyContent: string): TextContainerProperty[] {
@@ -423,7 +423,7 @@ function buildCardPayload(card: MessageCard): {
     isEventCapture: 0,
   })
 
-  const draftItems = card.drafts.slice(0, 3).map((draft) => clampUtf8(draft.lens, 64))
+  const draftItems = card.drafts.slice(0, 3).map((draft) => clampUtf8(draft.lens, 63))
   draftItems.push('Пропустить')
   const drafts = new ListContainerProperty({
     xPosition: 0,
