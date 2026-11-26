@@ -373,6 +373,64 @@ export function createBot(
     provider: LlmProvider | null
   }) {
     const relevantNotes = findRelevantNotes(db, params.ownerId, params.text, 3)
+
+    // 1) Check Google Calendar BEFORE calling LLM so AI gets exact busy/free facts
+    let calendarConnected = false
+    let upcomingEvents: Awaited<ReturnType<typeof fetchUserUpcomingMeetings>>['events'] = []
+    try {
+      const fetched = await fetchUserUpcomingMeetings({
+        db,
+        userId: params.ownerId,
+        calendarClient,
+        nowMs: params.nowMs,
+        horizonHours: 72,
+      })
+      calendarConnected = fetched.connected
+      upcomingEvents = fetched.events
+    } catch {
+      logger.warn('triage_calendar_fetch_failed', { userId: params.ownerId })
+    }
+
+    const proposed = evaluateProposedMeeting({
+      fromName: params.fromDisplayName,
+      text: params.text,
+      events: calendarConnected ? upcomingEvents : [],
+      nowMs: params.nowMs,
+      tz: params.tz,
+    })
+
+    const calendarContextLines: string[] = []
+    if (calendarConnected) {
+      if (proposed && !proposed.isFree && proposed.conflict) {
+        calendarContextLines.push(
+          `BUSY at requested time (${proposed.displayWhen}): conflict "${proposed.conflict.title}" ${proposed.conflict.start}-${proposed.conflict.end}.`,
+        )
+        if (proposed.altSlots.length > 0) {
+          calendarContextLines.push(
+            `Nearest free slots: ${proposed.altSlots.map((s) => s.displayWhen).join(', ')}.`,
+          )
+        }
+        calendarContextLines.push(
+          'STRICT RULE: Do NOT say the user is free or agree to the requested time.',
+        )
+      } else if (proposed && proposed.isFree) {
+        calendarContextLines.push(`FREE at requested time (${proposed.displayWhen}).`)
+      }
+      if (upcomingEvents.length > 0) {
+        const busySummary = upcomingEvents
+          .filter((e) => !e.allDay)
+          .slice(0, 8)
+          .map(
+            (e) =>
+              `- ${e.summary}: ${new Date(e.startMs).toLocaleString('en-GB', { timeZone: params.tz, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}–${new Date(e.endMs).toLocaleTimeString('en-GB', { timeZone: params.tz, hour: '2-digit', minute: '2-digit' })}`,
+          )
+          .join('\n')
+        if (busySummary) {
+          calendarContextLines.push(`Busy events (next 72h):\n${busySummary}`)
+        }
+      }
+    }
+
     const { result: triage, usedFallback, providerId } = await triageMessage(
       {
         fromName: params.fromDisplayName,
@@ -380,6 +438,7 @@ export function createBot(
         recentMessages: params.recentMessages,
         tz: params.tz,
         nowMs: params.nowMs,
+        calendarContext: calendarContextLines.length > 0 ? calendarContextLines.join('\n') : undefined,
         relevantNotes,
       },
       params.provider,
@@ -387,60 +446,62 @@ export function createBot(
 
     let storedPayload: Record<string, unknown> = { ...triage }
 
-    try {
-      const { connected, events } = await fetchUserUpcomingMeetings({
-        db,
-        userId: params.ownerId,
-        calendarClient,
-        nowMs: params.nowMs,
-        horizonHours: 72,
-      })
-      const proposed = evaluateProposedMeeting({
-        fromName: params.fromDisplayName,
-        text: params.text,
-        events: connected ? events : [],
-        nowMs: params.nowMs,
-        tz: params.tz,
-      })
+    if (proposed) {
+      storedPayload = {
+        ...storedPayload,
+        proposedMeeting: proposed,
+      }
 
-      if (proposed) {
-        storedPayload = {
-          ...storedPayload,
-          proposedMeeting: proposed,
+      if (!proposed.isFree && proposed.conflict) {
+        // 2) Hard-filter any affirmative / "free" AI drafts so a conflict NEVER shows "Да, свободен"
+        const isAffirmativeOrFreeDraft = (text: string): boolean => {
+          const lower = text.toLowerCase()
+          if (/(свобод|конечно|договорил|подходит|подойдет|подойдёт|хорошо|ладно|буду\b|смогу\b)/iu.test(lower)) {
+            return !/(не\s+свобод|не\s+смогу|не\s+подойд|занят)/iu.test(lower)
+          }
+          if (/^\s*(да|ок|окей|давай|yes|sure|ok|okay)(?![\p{L}\p{N}])/iu.test(lower)) {
+            return true
+          }
+          return false
         }
 
-        if (!proposed.isFree && proposed.conflict) {
-          const freeDraft = proposed.conflict.freeReplyDraft
-          const updatedDrafts = freeDraft
-            ? [
-                { text: freeDraft, lens: freeDraft, slot: null },
-                ...triage.drafts.filter((d) => d.lens.toLowerCase() !== freeDraft.toLowerCase()),
-              ].slice(0, 4)
-            : triage.drafts
+        const freeDraft = proposed.conflict.freeReplyDraft
+        const safeAiDrafts = triage.drafts.filter(
+          (d) =>
+            !isAffirmativeOrFreeDraft(d.lens) &&
+            (!freeDraft || d.lens.toLowerCase() !== freeDraft.toLowerCase()),
+        )
 
-          storedPayload = {
-            ...storedPayload,
-            priority: 'urgent',
-            intent: 'schedule',
-            drafts: updatedDrafts,
-            conflict: proposed.conflict,
-          }
+        const fallbackDecline = /[а-яё]/i.test(params.text)
+          ? { text: 'В это время занят', lens: 'В это время занят', slot: null }
+          : { text: 'Busy at that time', lens: 'Busy at that time', slot: null }
 
-          const userCfg = getUserSettings(db, params.ownerId)
-          if (userCfg.conflictAlerts) {
-            try {
-              await notifyOwner(
-                params.ownerTgUserId,
-                `⚠ Ты занят. ${params.fromDisplayName} предлагает встречу ${proposed.shortWhen} — у тебя ${proposed.conflict.title} ${proposed.conflict.start}–${proposed.conflict.end}`,
-              )
-            } catch {
-              logger.warn('conflict_owner_alert_failed', { userId: params.ownerId })
-            }
+        const updatedDrafts = [
+          ...(freeDraft ? [{ text: freeDraft, lens: freeDraft, slot: null }] : []),
+          ...safeAiDrafts,
+          ...(safeAiDrafts.length === 0 ? [fallbackDecline] : []),
+        ].slice(0, 4)
+
+        storedPayload = {
+          ...storedPayload,
+          priority: 'urgent',
+          intent: 'schedule',
+          drafts: updatedDrafts,
+          conflict: proposed.conflict,
+        }
+
+        const userCfg = getUserSettings(db, params.ownerId)
+        if (userCfg.conflictAlerts) {
+          try {
+            await notifyOwner(
+              params.ownerTgUserId,
+              `⚠ Ты занят. ${params.fromDisplayName} предлагает встречу ${proposed.shortWhen} — у тебя ${proposed.conflict.title} ${proposed.conflict.start}–${proposed.conflict.end}`,
+            )
+          } catch {
+            logger.warn('conflict_owner_alert_failed', { userId: params.ownerId })
           }
         }
       }
-    } catch {
-      // Keep base triage if calendar lookup fails
     }
 
     return { triage, storedPayload, usedFallback, providerId }

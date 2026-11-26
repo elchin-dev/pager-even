@@ -298,7 +298,7 @@ export function parseProposedMeetingTime(
       lower,
     )
   const hasMeetingCue =
-    /(созвон|звонок|встрет|встреч|митинг|синк|зум|zoom|meet|call|sync|кофе|обсуд|слот|удобно|сможешь|свобод)/iu.test(
+    /(созвон|звонок|встрет|встреч|митинг|синк|зум|zoom|meet|call|sync|кофе|обсуд|слот|удобно|сможешь|свобод|занят|план)/iu.test(
       lower,
     )
   if (!hasMeetingCue && !isLunchMention) return null
@@ -308,8 +308,9 @@ export function parseProposedMeetingTime(
   const dayOffset = isAfterTomorrow ? 2 : isTomorrow ? 1 : 0
 
   const timeMatch =
-    lower.match(/(?<![\p{L}\p{N}])(?:в|на|at|к)\s*(\d{1,2})(?:[:.](\d{2}))?(?![\p{L}\p{N}])/iu) ??
-    lower.match(/(?<![\p{N}])(\d{1,2})[:.](\d{2})(?![\p{N}])/u)
+    lower.match(/(?<![\p{L}\p{N}])(?:в|на|at|к)\s*(\d{1,2})(?:[:.\s](\d{2}))?(?![\p{L}\p{N}])/iu) ??
+    lower.match(/(?<![\p{N}])(\d{1,2})[:.](\d{2})(?![\p{N}])/u) ??
+    lower.match(/(?<![\p{L}\p{N}])(\d{1,2})\s+(00|15|30|45)(?![\p{L}\p{N}])/u)
 
   let hour: number
   let minute: number

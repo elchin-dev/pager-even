@@ -413,7 +413,21 @@ test('Prompt 6 & 7: deterministic busy conflict alert + free slot first draft + 
     }
     assert.equal(card.conflictLine, 'У тебя Standup 15-16')
     assert.equal(card.drafts[0]?.lens, 'Занят, давай в 16:00?')
+    // Crucial: affirmative AI draft "Да, давай в 15:30" MUST be stripped when busy!
+    assert.equal(
+      card.drafts.some((d) => /да,\s*давай|свобод/iu.test(d.lens)),
+      false,
+    )
     assert.equal(card.proposedMeeting?.isFree, false)
+
+    // Regression: "15 00" (space) with 14:45-15:45 overlap also strips any "свободен" draft
+    const overlapLunch = parseProposedMeetingTime(
+      'Ты свободен завтра в 15 00?',
+      nowMs,
+      'Asia/Tashkent',
+    )
+    assert.ok(overlapLunch)
+    assert.equal(overlapLunch.displayWhen, 'Завтра 15:00-15:30')
 
     // Voice brief + create meeting saves description into Google Calendar
     const briefApp = new Hono<AuthEnv>()

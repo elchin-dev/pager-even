@@ -67,6 +67,7 @@ export interface TriageInput {
   tz: string
   nowMs?: number
   freeSlots?: CalendarSlot[]
+  calendarContext?: string
   relevantNotes?: Array<{ id: number; text: string }>
 }
 
@@ -104,6 +105,7 @@ Rules:
     - Complex request, scheduling, or multi-choice situation: up to 4 replies.
   - Every reply MUST differ in meaning/action (not just rewording the same idea). Avoid generic filler unless truly appropriate.
   - If "Relevant user notes" are provided and answer the sender's question (e.g. prices, rates, addresses, details), use those exact facts/numbers directly in the reply (e.g. "Сайт под ключ - от 800$").
+  - Calendar safety (STRICT): If "Calendar context" says the user is BUSY at the requested time, NEVER generate replies saying "free", "yes", "works", or agreeing to that time — only offer free alternative slots or polite decline/reschedule. Never invent availability that contradicts Calendar context.
   - CRITICAL: Every draft's "text" MUST be concise (<= 32 characters) AND "lens" MUST be 100% IDENTICAL to "text" (exact same characters, no shortening or rephrasing, same original language/script — keep Russian in Cyrillic, English in English). The exact text shown on the glasses will be sent verbatim.
   - Always set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
@@ -270,6 +272,7 @@ export function buildTriageUserPrompt(input: TriageInput): string {
     `Current UTC time: ${nowIso}`,
     `User timezone: ${input.tz}`,
     `Sender: ${input.fromName}`,
+    input.calendarContext ? `Calendar context:\n${input.calendarContext}` : '',
     slotLines ? `Available calendar slots:\n${slotLines}` : '',
     noteLines ? `Relevant user notes:\n${noteLines}` : '',
     historyLines ? `Recent chat messages:\n${historyLines}` : '',
