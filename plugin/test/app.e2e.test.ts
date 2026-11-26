@@ -662,16 +662,23 @@ test('E2E Flow 1: Home -> Inbox -> Card -> Quick Reply -> Promise Reminder confi
     await flush()
     const inbox = h.lastRender()
     const inboxItems = inbox.listObject?.[0]?.itemContainer?.itemName ?? []
+    assert.equal(inbox.textObject?.[0]?.content, 'Сообщения: 6, срочные: 2')
+    assert.equal(inbox.textObject?.[1]?.containerName, 'divider')
+    assert.doesNotMatch(inbox.textObject?.[0]?.content ?? '', /PAGER|new/i)
     assert.equal(inboxItems.length, 2)
-    assert.match(inboxItems[0]!, /Азиз/)
-    assert.match(inboxItems[1]!, /^!! Дильноза/)
+    assert.match(inboxItems[0]!, /^Азиз: Пришли КП/)
+    assert.match(inboxItems[1]!, /^!! Дильноза: /)
 
     // 3) Tap Aziz (index 0) -> card-full -> tap -> card drafts
     h.emitEvent({
       listEvent: { currentSelectItemIndex: 0, eventType: OsEventTypeList.CLICK_EVENT },
     })
     await flush()
-    assert.match(h.lastRender().textObject?.[1]?.content ?? '', /Пришли КП по проекту/)
+    assert.match(h.lastRender().textObject?.[2]?.content ?? '', /Пришли КП по проекту/)
+    // Chat header = sender name only, with a border-bottom divider container under it
+    const chatFull = h.lastRender()
+    assert.equal(chatFull.textObject?.[0]?.content, '! Азиз Каримов')
+    assert.equal(chatFull.textObject?.[1]?.containerName, 'divider')
 
     h.emitEvent({
       textEvent: { eventType: OsEventTypeList.CLICK_EVENT },
@@ -874,7 +881,8 @@ test('E2E Flow 4 & 5 & 6: Conflict Create Meeting (3s undo), Digest Pagination, 
     h.emitEvent({ textEvent: { eventType: OsEventTypeList.CLICK_EVENT } })
     await flush()
     const card = h.lastRender()
-    assert.match(card.textObject?.[1]?.content ?? '', /У тебя Standup 15-16/)
+    assert.match(card.textObject?.[0]?.content ?? '', /У тебя Standup 15-16/)
+    assert.match(card.textObject?.[0]?.content ?? '', /^Дильноза\n-+\n/)
     const draftItems = card.listObject?.[0]?.itemContainer?.itemName ?? []
     assert.deepEqual(draftItems, ['Занят, давай в 16:00?', 'Да, давай в 15:30', 'Пропустить'])
 

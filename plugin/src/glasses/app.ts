@@ -92,8 +92,6 @@ const INBOX_EMPTY_NAME = 'inbox-empty'
 
 const CARD_HEADER_ID = 20
 const CARD_HEADER_NAME = 'card-header'
-const CARD_GIST_ID = 21
-const CARD_GIST_NAME = 'card-gist'
 const CARD_DRAFTS_ID = 22
 const CARD_DRAFTS_NAME = 'card-drafts'
 const CARD_FULL_HEADER_ID = 23
@@ -134,6 +132,9 @@ const MEETING_BRIEF_BODY_ID = 58
 const MEETING_BRIEF_BODY_NAME = 'meet-brief'
 const MEETING_ACTIONS_ID = 59
 const MEETING_ACTIONS_NAME = 'meet-actions'
+
+const DIVIDER_ID = 70
+const DIVIDER_NAME = 'divider'
 
 const SOON_HEADER_ID = 60
 const SOON_HEADER_NAME = 'soon-header'
@@ -844,7 +845,7 @@ function buildGenericListPagePayload(params: {
 function formatInboxListLine(item: InboxItem): string {
   const isUrgent = Boolean(item.urgent || item.priority === 'urgent')
   const conflictPrefix = item.hasConflict ? '!! ' : ''
-  const raw = `${conflictPrefix}${item.from}  ${item.preview}`
+  const raw = `${conflictPrefix}${item.from}: ${item.preview}`
   if (isUrgent) {
     const trimmed = clampVisualAndUtf8(raw, 56, 56)
     const targetUnits = 62
@@ -888,10 +889,30 @@ function buildPairingTextContainers(bodyContent: string): TextContainerProperty[
 }
 
 function formatInboxHeader(counts: InboxCounts): string {
-  if (counts.urgent > 0) {
-    return `PAGER · ${counts.all} (${counts.urgent}!)`
-  }
-  return `PAGER · ${counts.all} new`
+  return t(
+    `Сообщения: ${counts.all}, срочные: ${counts.urgent}`,
+    `Messages: ${counts.all}, urgent: ${counts.urgent}`,
+  )
+}
+
+/**
+ * Even Hub text containers only support a full-frame border, so a "border-bottom"
+ * is a thin (4px) bordered container placed directly under the header.
+ */
+function buildDividerContainer(y: number): TextContainerProperty {
+  return new TextContainerProperty({
+    xPosition: 0,
+    yPosition: y,
+    width: 576,
+    height: 4,
+    borderWidth: 1,
+    borderColor: 5,
+    paddingLength: 0,
+    containerID: DIVIDER_ID,
+    containerName: DIVIDER_NAME,
+    content: ' ',
+    isEventCapture: 0,
+  })
 }
 
 function buildInboxPayload(
@@ -918,34 +939,35 @@ function buildInboxPayload(
     content: formatInboxHeader(counts),
     isEventCapture: 0,
   })
+  const divider = buildDividerContainer(44)
 
   if (items.length === 0) {
     const emptyText = new TextContainerProperty({
       xPosition: 0,
-      yPosition: 46,
+      yPosition: 50,
       width: 576,
-      height: 242,
+      height: 238,
       borderWidth: 0,
       borderColor: 5,
       paddingLength: 4,
       containerID: INBOX_EMPTY_ID,
       containerName: INBOX_EMPTY_NAME,
-      content: overrideEmptyText ?? 'Всё тихо',
+      content: overrideEmptyText ?? t('Всё тихо', 'All quiet'),
       isEventCapture: 1,
     })
 
     return {
-      containerTotalNum: 2,
-      textObject: [header, emptyText],
+      containerTotalNum: 3,
+      textObject: [header, divider, emptyText],
       menuObject: buildMenuObject(),
     }
   }
 
   const list = new ListContainerProperty({
     xPosition: 0,
-    yPosition: 46,
+    yPosition: 50,
     width: 576,
-    height: 242,
+    height: 238,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,
@@ -961,8 +983,8 @@ function buildInboxPayload(
   })
 
   return {
-    containerTotalNum: 2,
-    textObject: [header],
+    containerTotalNum: 3,
+    textObject: [header, divider],
     listObject: [list],
     menuObject: buildMenuObject(),
   }
@@ -977,7 +999,7 @@ function formatCardHeaderText(card: MessageCard): string {
       64,
     )
   }
-  return clampUtf8(`${prefix}${card.from}  [${card.intent}]`, 64)
+  return clampUtf8(`${prefix}${card.from}`, 64)
 }
 
 function formatTranscriptPageHeader(
@@ -985,15 +1007,13 @@ function formatTranscriptPageHeader(
   pageIndex: number,
   totalPages: number,
 ): string {
+  const pageSuffix = totalPages > 1 ? ` · ${pageIndex + 1}/${totalPages}` : ''
   if (card.media) {
-    const label = card.media.kind === 'video_note' ? 'Video' : 'Voice'
+    const label = card.media.kind === 'video_note' ? 'video' : 'voice'
     const dur = formatDurationMmSs(card.media.duration)
-    if (totalPages > 1) {
-      return clampUtf8(`${label} ${dur} · ${pageIndex + 1}/${totalPages} · tap: replies`, 64)
-    }
-    return clampUtf8(`${card.from} · ${label.toLowerCase()} ${dur} · tap: replies`, 64)
+    return clampUtf8(`${card.from} · ${label} ${dur}${pageSuffix}`, 64)
   }
-  return clampUtf8(`${card.from} · ${pageIndex + 1}/${totalPages}`, 64)
+  return clampUtf8(`${card.from}${pageSuffix}`, 64)
 }
 
 function buildTranscriptPagePayload(
@@ -1021,9 +1041,9 @@ function buildTranscriptPagePayload(
 
   const body = new TextContainerProperty({
     xPosition: 0,
-    yPosition: 46,
+    yPosition: 50,
     width: 576,
-    height: 242,
+    height: 238,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,
@@ -1034,8 +1054,8 @@ function buildTranscriptPagePayload(
   })
 
   return {
-    containerTotalNum: 2,
-    textObject: [header, body],
+    containerTotalNum: 3,
+    textObject: [header, buildDividerContainer(44), body],
     menuObject: buildMenuObject(true),
   }
 }
@@ -1046,34 +1066,22 @@ function buildCardPayload(card: MessageCard): {
   listObject: ListContainerProperty[]
   menuObject: MenuContainerProperty
 } {
+  // Max 3 containers per page: name + border-bottom line (ASCII) + gist share one text
+  // container so the reply list keeps its own container.
+  const gistContent = card.conflictLine
+    ? `${card.conflictLine}\n${card.gist}`
+    : card.gist
   const header = new TextContainerProperty({
     xPosition: 0,
     yPosition: 0,
     width: 576,
-    height: 44,
+    height: 112,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,
     containerID: CARD_HEADER_ID,
     containerName: CARD_HEADER_NAME,
-    content: formatCardHeaderText(card),
-    isEventCapture: 0,
-  })
-
-  const gistContent = card.conflictLine
-    ? `${card.conflictLine}\n${card.gist}`
-    : card.gist
-  const gist = new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 44,
-    width: 576,
-    height: 68,
-    borderWidth: 0,
-    borderColor: 5,
-    paddingLength: 4,
-    containerID: CARD_GIST_ID,
-    containerName: CARD_GIST_NAME,
-    content: gistContent,
+    content: `${formatCardHeaderText(card)}\n${'-'.repeat(30)}\n${gistContent}`,
     isEventCapture: 0,
   })
 
@@ -1099,8 +1107,8 @@ function buildCardPayload(card: MessageCard): {
   })
 
   return {
-    containerTotalNum: 3,
-    textObject: [header, gist],
+    containerTotalNum: 2,
+    textObject: [header],
     listObject: [drafts],
     menuObject: buildMenuObject(true),
   }
@@ -1122,15 +1130,15 @@ function buildCardFullPayload(card: MessageCard): {
     paddingLength: 4,
     containerID: CARD_FULL_HEADER_ID,
     containerName: CARD_FULL_HEADER_NAME,
-    content: `${prefix}${card.from} · tap: replies · 2x: back`.slice(0, 64),
+    content: clampUtf8(`${prefix}${card.from}`, 64),
     isEventCapture: 0,
   })
 
   const body = new TextContainerProperty({
     xPosition: 0,
-    yPosition: 46,
+    yPosition: 50,
     width: 576,
-    height: 242,
+    height: 238,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,
@@ -1141,8 +1149,8 @@ function buildCardFullPayload(card: MessageCard): {
   })
 
   return {
-    containerTotalNum: 2,
-    textObject: [header, body],
+    containerTotalNum: 3,
+    textObject: [header, buildDividerContainer(44), body],
     menuObject: buildMenuObject(true),
   }
 }
