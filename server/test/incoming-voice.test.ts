@@ -468,10 +468,10 @@ test('incoming voice, video_note, transcription failure, and tooLong media flow 
       headers: { Authorization: `Bearer ${deviceToken}` },
     })
     const cardJson6 = (await cardRes6.json()) as { gist: string; fullText: string }
-    assert.equal(cardJson6.gist, '[Стикер: палец вверх]')
-    assert.match(cardJson6.fullText, /Rustam: \[Стикер: палец вверх\]/)
+    assert.equal(cardJson6.gist, '[Стикер 👍: палец вверх]')
+    assert.match(cardJson6.fullText, /Rustam: \[Стикер 👍: палец вверх\]/)
 
-    // 7) Incoming GIF (animation) -> shown as sticker with (GIF) in parentheses
+    // 7) Incoming GIF (animation) -> [GIF] with caption
     const sse7 = waitForInboxSse(1)
     await app.request('/tg/webhook', {
       method: 'POST',
@@ -504,8 +504,8 @@ test('incoming voice, video_note, transcription failure, and tooLong media flow 
       headers: { Authorization: `Bearer ${deviceToken}` },
     })
     const cardJson7 = (await cardRes7.json()) as { gist: string; fullText: string }
-    assert.equal(cardJson7.gist, '[Стикер (GIF)] Смотри как смешно')
-    assert.match(cardJson7.fullText, /Dima: \[Стикер \(GIF\)\] Смотри как смешно/)
+    assert.equal(cardJson7.gist, '[GIF] Смотри как смешно')
+    assert.match(cardJson7.fullText, /Dima: \[GIF\] Смотри как смешно/)
   } finally {
     sqlite.close()
   }

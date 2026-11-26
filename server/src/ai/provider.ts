@@ -22,6 +22,7 @@ export interface LlmProvider {
   readonly model: string
   completeJson<T>(opts: CompleteJsonOptions<T>): Promise<T>
   transcribeAudio?(buffer: Buffer, mime: string): Promise<TranscribeResult>
+  describeImage?(buffer: Buffer, mime: string, kind: 'sticker' | 'gif'): Promise<string>
 }
 
 export type FetchLike = typeof fetch
@@ -265,6 +266,67 @@ export function createGeminiProvider(config: {
           schema: transcribeResultSchema,
         },
       )
+    },
+
+    async describeImage(
+      buffer: Buffer,
+      mime: string,
+      kind: 'sticker' | 'gif',
+    ): Promise<string> {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
+      const base64Data = buffer.toString('base64')
+      const res = await fetchImpl(endpoint, {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': config.apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: mime,
+                    data: base64Data,
+                  },
+                },
+                {
+                  text: `Describe what is shown in this ${kind} in 2 to 5 words in Russian (if it has text, include the short text). No quotes, no markdown, no extra commentary.`,
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 48,
+          },
+        }),
+        signal: AbortSignal.timeout(config.timeoutMs ?? 10_000),
+      })
+
+      if (!res.ok) {
+        throw new Error(`gemini_describe_http_${res.status}`)
+      }
+
+      const data = (await res.json()) as {
+        candidates?: Array<{
+          content?: {
+            parts?: Array<{ text?: string }>
+          }
+        }>
+      }
+
+      const text = (data.candidates?.[0]?.content?.parts ?? [])
+        .map((part) => part.text ?? '')
+        .join('')
+        .replace(/[\r\n]+/g, ' ')
+        .trim()
+      if (!text) {
+        throw new Error('gemini_describe_empty')
+      }
+      return text.slice(0, 60)
     },
   }
 }

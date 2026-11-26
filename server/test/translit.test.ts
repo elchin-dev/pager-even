@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { stripUnsupportedLensChars, toLens, translit } from '../src/lib/translit.js'
+import { stripUnsupportedLensChars, toLens, toOriginalLens, translit } from '../src/lib/translit.js'
 
 test('translit converts Russian Cyrillic accurately', () => {
   assert.equal(translit('Привет, Азиз!'), 'Privet, Aziz!')
@@ -26,4 +26,10 @@ test('toLens strips unsupported characters, collapses whitespace, and truncates 
 
   assert.equal(toLens('Hello', 1), '…')
   assert.equal(toLens('Hello', 0), '')
+})
+
+test('toOriginalLens preserves Cyrillic and Unicode emojis without breaking surrogate pairs', () => {
+  assert.equal(toOriginalLens('Привет 👍🔥❤️', 32), 'Привет 👍🔥❤️')
+  const sliced = toOriginalLens('Ок 👍😂🔥', 5)
+  assert.equal(sliced, 'Ок 👍…')
 })

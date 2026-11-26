@@ -159,8 +159,11 @@ function clampUtf8(input: string, maxBytes: number): string {
 function visualWidthUnits(input: string): number {
   let units = 0
   for (const ch of input) {
+    const code = ch.codePointAt(0) ?? 0
     if (ch === ' ') {
       units += 1
+    } else if (code >= 0x1f000 || (code >= 0x2600 && code <= 0x27bf)) {
+      units += 2.3
     } else if (/[\u0400-\u04ff]/.test(ch)) {
       units += 2.2
     } else {

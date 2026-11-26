@@ -120,9 +120,13 @@ export function formatStickerText(sticker: {
   emoji?: string
   set_name?: string
 }): string {
-  const emojiLabel = lookupEmojiLabel(sticker.emoji)
-  if (emojiLabel) {
-    return `[Стикер: ${emojiLabel}]`
+  const emoji = sticker.emoji?.trim()
+  const emojiLabel = lookupEmojiLabel(emoji)
+  if (emoji && emojiLabel) {
+    return `[Стикер ${emoji}: ${emojiLabel}]`
+  }
+  if (emoji) {
+    return `[Стикер ${emoji}]`
   }
   const setLabel = cleanSetName(sticker.set_name)
   if (setLabel) {
@@ -159,11 +163,11 @@ export function formatGifText(
 ): string {
   const cleanCaption = caption?.trim()
   if (cleanCaption) {
-    return `[Стикер (GIF)] ${cleanCaption}`
+    return `[GIF] ${cleanCaption}`
   }
   const fileLabel = cleanGifFileName(animation.file_name)
   if (fileLabel) {
-    return `[Стикер (GIF): ${fileLabel}]`
+    return `[GIF: ${fileLabel}]`
   }
-  return '[Стикер (GIF)]'
+  return '[GIF]'
 }

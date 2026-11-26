@@ -625,11 +625,51 @@ export function createBot(
       return
     }
 
-    const messageText = msg.sticker
+    let messageText = msg.sticker
       ? formatStickerText(msg.sticker)
       : msg.animation
         ? formatGifText(msg.animation, msg.caption)
         : (msg.text ?? msg.caption ?? '')
+
+    const provider = resolveProvider(owner.id)
+    if ((msg.sticker || msg.animation) && provider?.describeImage) {
+      const visualTarget: { fileId: string; mime: string; kind: 'sticker' | 'gif' } | null =
+        msg.sticker
+          ? !msg.sticker.is_animated && !msg.sticker.is_video
+            ? { fileId: msg.sticker.file_id, mime: 'image/webp', kind: 'sticker' }
+            : msg.sticker.thumbnail?.file_id
+              ? { fileId: msg.sticker.thumbnail.file_id, mime: 'image/jpeg', kind: 'sticker' }
+              : null
+          : msg.animation?.thumbnail?.file_id
+            ? { fileId: msg.animation.thumbnail.file_id, mime: 'image/jpeg', kind: 'gif' }
+            : msg.animation && (msg.animation.file_size ?? 0) <= 4 * 1024 * 1024
+              ? { fileId: msg.animation.file_id, mime: 'video/mp4', kind: 'gif' }
+              : null
+
+      if (visualTarget) {
+        try {
+          const imgBuf = await downloadFile(visualTarget.fileId)
+          const desc = await provider.describeImage(
+            imgBuf,
+            visualTarget.mime,
+            visualTarget.kind,
+          )
+          if (desc) {
+            if (msg.sticker) {
+              const emoji = msg.sticker.emoji?.trim()
+              messageText = emoji ? `[Стикер ${emoji}: ${desc}]` : `[Стикер: ${desc}]`
+            } else {
+              const cleanCaption = msg.caption?.trim()
+              messageText = cleanCaption
+                ? `[GIF: ${desc}] ${cleanCaption}`
+                : `[GIF: ${desc}]`
+            }
+          }
+        } catch {
+          // Keep deterministic sticker/GIF fallback label if download or vision fails
+        }
+      }
+    }
 
     const insertResult = db
       .insert(messages)
@@ -683,7 +723,7 @@ export function createBot(
           tz: userTz,
           nowMs: now,
         },
-        resolveProvider(owner.id),
+        provider,
       )
 
       db.update(messages)
