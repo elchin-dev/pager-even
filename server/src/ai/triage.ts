@@ -96,9 +96,14 @@ Rules:
 - lang: primary ISO 639-1 language code of the sender's message (e.g. "en", "ru", "uz").
 - drafts:
   - If priority is "urgent" or "needs_reply", provide 3 distinct, natural, concrete, ready-to-send replies in the sender's language ("text") that directly answer what the sender asked (avoid generic filler like "Yes, sounds good" or "Will reply shortly" unless truly appropriate):
-    1) Direct positive/actionable answer (e.g. confirming with specific next step or accepting the request).
-    2) Specific alternative, clarifying question, or counter-offer tailored to the message.
-    3) Polite defer/busy response with a realistic timeframe (e.g. "На встрече, отвечу через час").
+    - For yes/no, knowledge, or capability questions (e.g. "Знаешь...?", "Сможешь...?", "Есть...?", "Пойдешь...?"), ALWAYS cover both sides:
+      1) Direct positive answer (e.g. "Да, знаю", "Да, смогу")
+      2) Direct negative / don't-know answer (e.g. "Нет, не знаю", "Нет, не смогу")
+      3) Short clarifying question or defer (e.g. "А что там?", "Напишу позже")
+    - For other messages:
+      1) Direct positive/actionable answer.
+      2) Specific alternative, clarifying question, or counter-offer.
+      3) Polite defer/busy response with a realistic timeframe (e.g. "На встрече, отвечу через час").
   - CRITICAL: Every draft's "text" MUST be concise (<= 32 characters) AND "lens" MUST be 100% IDENTICAL to "text" (exact same characters, no shortening or rephrasing, same original language/script — keep Russian in Cyrillic, English in English). The exact text shown on the glasses will be sent verbatim.
   - Always set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
@@ -145,6 +150,8 @@ export function buildFallbackTriage(input: {
   const isPing = /^\s*(ало|алло|привет|эй|тут|на связи|hello|hi|hey|ping)\b[?!.\s]*$/iu.test(
     input.text,
   )
+  const isQuestion =
+    /\?/.test(input.text) || /\b(знаешь|можешь|сможешь|есть ли|know|can you)\b/iu.test(input.text)
   const drafts: TriageDraft[] = isCyrillic
     ? isPing
       ? [
@@ -152,22 +159,34 @@ export function buildFallbackTriage(input: {
           { text: 'Слушаю, что случилось?', lens: 'Слушаю, что случилось?', slot: null },
           { text: 'Напишу через 10 минут', lens: 'Напишу через 10 минут', slot: null },
         ]
-      : [
-          { text: 'Да, хорошо', lens: 'Да, хорошо', slot: null },
-          { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null },
-          { text: 'Созвонимся позже?', lens: 'Созвонимся позже?', slot: null },
-        ]
+      : isQuestion
+        ? [
+            { text: 'Да, конечно', lens: 'Да, конечно', slot: null },
+            { text: 'Нет, не знаю', lens: 'Нет, не знаю', slot: null },
+            { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null },
+          ]
+        : [
+            { text: 'Да, хорошо', lens: 'Да, хорошо', slot: null },
+            { text: 'Нет, не получится', lens: 'Нет, не получится', slot: null },
+            { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null },
+          ]
     : isPing
       ? [
           { text: 'Yes, I am here', lens: 'Yes, I am here', slot: null },
           { text: 'What is up?', lens: 'What is up?', slot: null },
           { text: 'Back in 10 min', lens: 'Back in 10 min', slot: null },
         ]
-      : [
-          { text: 'Yes, sounds good', lens: 'Yes, sounds good', slot: null },
-          { text: 'Will reply shortly', lens: 'Will reply shortly', slot: null },
-          { text: 'Can we call later?', lens: 'Can we call later?', slot: null },
-        ]
+      : isQuestion
+        ? [
+            { text: 'Yes, I do', lens: 'Yes, I do', slot: null },
+            { text: "No, I don't know", lens: "No, I don't know", slot: null },
+            { text: 'Will reply shortly', lens: 'Will reply shortly', slot: null },
+          ]
+        : [
+            { text: 'Yes, sounds good', lens: 'Yes, sounds good', slot: null },
+            { text: "No, can't do that", lens: "No, can't do that", slot: null },
+            { text: 'Will reply shortly', lens: 'Will reply shortly', slot: null },
+          ]
 
   return {
     priority,
@@ -266,7 +285,7 @@ export async function triageMessage(
       system: TRIAGE_SYSTEM_PROMPT,
       user: buildTriageUserPrompt(input),
       schema: triageResultSchema,
-      maxTokens: 500,
+      maxTokens: 250,
     })
 
     return {

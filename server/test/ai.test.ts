@@ -170,4 +170,19 @@ test('triageMessage normalizes gist <= 40 and draft.lens <= 32, and falls back w
   )
   assert.equal(urgentFallback.usedFallback, true)
   assert.equal(urgentFallback.result.priority, 'urgent')
+
+  const questionFallback = await triageMessage(
+    {
+      fromName: 'Friend',
+      text: 'Ты знаешь про стим?',
+      recentMessages: [],
+      tz: 'Asia/Tashkent',
+    },
+    null,
+  )
+  assert.equal(questionFallback.usedFallback, true)
+  assert.ok(
+    questionFallback.result.drafts.some((d) => /не знаю|нет/i.test(d.lens)),
+    'question fallback should include a negative/don’t-know option',
+  )
 })

@@ -47,7 +47,7 @@ import {
 } from '../phone/view'
 
 const POLL_INTERVAL_MS = 2000
-const INBOX_REBUILD_THROTTLE_MS = 1000
+const INBOX_REBUILD_THROTTLE_MS = 300
 
 const PAIR_HEADER_ID = 1
 const PAIR_HEADER_NAME = 'pair-header'
@@ -88,7 +88,7 @@ const VOICE_BODY_NAME = 'voice-body'
 const VOICE_CONFIRM_LIST_ID = 42
 const VOICE_CONFIRM_LIST_NAME = 'voice-cf-list'
 
-const SEND_UNDO_SECONDS = VOICE_CONFIG.undoWindowSec
+const SEND_UNDO_SECONDS = 1
 
 const MENU_REFRESH_ID = 1
 const MENU_SKIP_ID = 2
@@ -845,8 +845,14 @@ export async function startGlassesApp(): Promise<void> {
       },
     })
     fallbackPollTimer = window.setInterval(() => {
-      if (!disposed && screen === 'inbox') {
+      if (disposed) return
+      if (screen === 'inbox') {
         scheduleInboxRefresh(false)
+      } else if (
+        (screen === 'card-full' || screen === 'card' || screen === 'transcript-pages') &&
+        activeCard
+      ) {
+        void refreshActiveCardInPlace()
       }
     }, 10_000)
   }
