@@ -741,6 +741,18 @@ test('E2E Flow 2: Meetings -> Brief -> Reschedule +30 min with 3s undo cancellat
     const actions = brief.listObject?.[0]?.itemContainer?.itemName ?? []
     assert.deepEqual(actions, ['Заметки (2)', 'Опаздываю на 5 мин', 'Перенести +30 мин'])
 
+    // Tap "Заметки (2)" (index 0) -> MUST open notes list IMMEDIATELY without 3s undo countdown!
+    h.emitEvent({
+      listEvent: { currentSelectItemIndex: 0, eventType: OsEventTypeList.CLICK_EVENT },
+    })
+    await flush(30)
+    const meetingNotes = h.lastRender()
+    assert.match(meetingNotes.textObject?.[0]?.content ?? '', /^Заметки встречи/)
+    // 2x tap back to meeting-card
+    h.emitEvent({ sysEvent: { eventType: OsEventTypeList.DOUBLE_CLICK_EVENT } })
+    await flush(30)
+    assert.equal(h.lastRender().textObject?.[0]?.content, 'Standup')
+
     // Tap "Перенести +30 мин" (index 2) -> 3s undo screen
     h.emitEvent({
       listEvent: { currentSelectItemIndex: 2, eventType: OsEventTypeList.CLICK_EVENT },

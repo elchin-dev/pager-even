@@ -16,6 +16,7 @@ import {
   type GoogleCalendarClient,
 } from './google-calendar.js'
 import { logger } from './logger.js'
+import { findRelevantNotes } from './notes-service.js'
 import { dispatchReminderOnce, type SendBotReminderFn } from './reminders.js'
 import { toOriginalLens } from './translit.js'
 import type { SendTelegramMessageFn } from '../routes/msg.js'
@@ -188,13 +189,23 @@ export async function generateMeetingBriefSummary(params: {
   const eventDescription = params.event.description?.trim() ?? ''
 
   const attachedNotes = params.db
-    .select({ text: notes.text })
+    .select({ id: notes.id, text: notes.text })
     .from(notes)
     .where(and(eq(notes.userId, params.userId), eq(notes.meetingEventId, params.event.id)))
     .orderBy(desc(notes.updatedAt), desc(notes.id))
     .limit(5)
     .all()
-  const noteSnippets = attachedNotes.map((n) => n.text.slice(0, 160)).filter(Boolean)
+  const attachedIds = new Set(attachedNotes.map((n) => n.id))
+  const matchedUnlinkedNotes = findRelevantNotes(
+    params.db,
+    params.userId,
+    params.event.summary,
+    3,
+  ).filter((n) => !attachedIds.has(n.id))
+  const noteSnippets = [...attachedNotes, ...matchedUnlinkedNotes]
+    .slice(0, 5)
+    .map((n) => n.text.slice(0, 160))
+    .filter(Boolean)
 
   const chatSnippets: string[] = []
   for (const match of params.matchedChats.slice(0, 3)) {
@@ -228,11 +239,13 @@ export async function generateMeetingBriefSummary(params: {
     return 'Без описания'
   }
 
-  const fallbackText = eventDescription
-    ? toOriginalLens(eventDescription, 110)
-    : noteSnippets[0]
-      ? toOriginalLens(noteSnippets[0], 110)
-      : toOriginalLens(chatSnippets[chatSnippets.length - 1] ?? 'Без описания', 110)
+  const fallbackParts: string[] = []
+  if (eventDescription) fallbackParts.push(eventDescription)
+  if (noteSnippets[0]) fallbackParts.push(`Заметка: ${noteSnippets[0]}`)
+  if (fallbackParts.length === 0 && chatSnippets.length > 0) {
+    fallbackParts.push(chatSnippets[chatSnippets.length - 1] ?? '')
+  }
+  const fallbackText = toOriginalLens(fallbackParts.filter(Boolean).join(' · '), 130)
 
   const provider =
     params.provider !== undefined
@@ -245,21 +258,21 @@ export async function generateMeetingBriefSummary(params: {
 
   try {
     const res = await provider.completeJson({
-      system: `You summarize a calendar meeting brief for smart glasses in 1-2 very short lines (<= 110 chars total) in Russian (keep original names/terms).
-Combine the event description, attached notes, and recent Telegram chat context with attendees (if provided).
+      system: `You summarize a calendar meeting brief for smart glasses in 1-2 short lines (<= 130 chars total) in Russian (keep original names/terms).
+Combine the event description, attached/matching user notes (MUST include key points from notes if present), and recent Telegram chat context with attendees (if provided).
 Output ONLY raw JSON: {"summary": string}. No markdown, no quotes around the summary.`,
       user: [
         `Event title: ${params.event.summary}`,
         eventDescription ? `Description: ${eventDescription.slice(0, 400)}` : '',
-        noteSnippets.length > 0 ? `Attached notes:\n${noteSnippets.join('\n')}` : '',
+        noteSnippets.length > 0 ? `User notes for this meeting:\n${noteSnippets.join('\n')}` : '',
         chatSnippets.length > 0 ? `Recent Telegram messages:\n${chatSnippets.join('\n')}` : '',
       ]
         .filter(Boolean)
         .join('\n\n'),
       schema: BRIEF_SCHEMA,
-      maxTokens: 120,
+      maxTokens: 140,
     })
-    return toOriginalLens(res.summary, 110) || fallbackText || 'Без описания'
+    return toOriginalLens(res.summary, 130) || fallbackText || 'Без описания'
   } catch {
     return fallbackText || 'Без описания'
   }

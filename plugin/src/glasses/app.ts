@@ -3691,7 +3691,9 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
         const actions = getMeetingBriefActions(activeMeetingBrief)
         const idx = event.listEvent?.currentSelectItemIndex ?? meetingActionIndex
         const chosen = actions[idx]
-        if (chosen) {
+        if (chosen?.action === 'notes') {
+          void openNotesList(activeMeetingBrief.id)
+        } else if (chosen) {
           void startMeetingActionUndo(chosen.action)
         }
         return
