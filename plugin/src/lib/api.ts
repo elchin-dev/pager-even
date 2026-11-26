@@ -41,6 +41,40 @@ export interface MessageMedia {
   tooLong?: boolean
 }
 
+export interface HomeSenderSummary {
+  chatId: number
+  name: string
+  count: number
+}
+
+export interface HomeMeetingItem {
+  id: string
+  title: string
+  startTime: string
+  endTime: string
+  minutesUntil: number | null
+}
+
+export interface HomeResponse {
+  nowTime: string
+  headerMeeting: string
+  nextMeetingLine: string | null
+  messages: {
+    total: number
+    urgent: number
+    senders: HomeSenderSummary[]
+  }
+  meetings: {
+    connected: boolean
+    todayCount: number
+    items: HomeMeetingItem[]
+  }
+  digest: {
+    enabled: boolean
+    count: number
+  }
+}
+
 export interface InboxItem {
   id: number
   chatId: number
@@ -148,6 +182,11 @@ export async function apiFetch(
     headers,
     signal: init.signal ?? AbortSignal.timeout(timeoutMs),
   })
+}
+
+export async function fetchHome(bridge: EvenAppBridge): Promise<HomeResponse> {
+  const res = await apiFetch(bridge, '/api/home', { method: 'GET' })
+  return parseJson<HomeResponse>(res)
 }
 
 export async function fetchInbox(

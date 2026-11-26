@@ -9,12 +9,26 @@ export interface CalendarSlot {
   label: string
 }
 
+export interface CalendarEventItem {
+  id: string
+  summary: string
+  startMs: number
+  endMs: number
+  allDay: boolean
+}
+
 export interface GoogleCalendarClient {
   listBusyIntervals(params: {
     refreshToken: string
     timeMinIso: string
     timeMaxIso: string
   }): Promise<BusyInterval[]>
+  listUpcomingEvents?(params: {
+    refreshToken: string
+    timeMinIso: string
+    timeMaxIso: string
+    maxResults?: number
+  }): Promise<CalendarEventItem[]>
   createEvent(params: {
     refreshToken: string
     summary: string
@@ -229,6 +243,63 @@ export function createDefaultGoogleCalendarClient(
       }
 
       return intervals
+    },
+
+    async listUpcomingEvents({ refreshToken, timeMinIso, timeMaxIso, maxResults = 20 }) {
+      const { clientId, clientSecret } = getCredentials()
+      const accessToken = await refreshGoogleAccessToken({
+        refreshToken,
+        clientId,
+        clientSecret,
+        fetchImpl,
+      })
+
+      const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events')
+      url.searchParams.set('singleEvents', 'true')
+      url.searchParams.set('orderBy', 'startTime')
+      url.searchParams.set('timeMin', timeMinIso)
+      url.searchParams.set('timeMax', timeMaxIso)
+      url.searchParams.set('maxResults', String(maxResults))
+
+      const res = await fetchImpl(url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(3500),
+      })
+
+      if (!res.ok) {
+        throw new Error(`Google Calendar events list failed (${res.status})`)
+      }
+
+      const data = (await res.json()) as {
+        items?: Array<{
+          id?: string
+          status?: string
+          summary?: string
+          start?: { dateTime?: string; date?: string }
+          end?: { dateTime?: string; date?: string }
+        }>
+      }
+
+      const events: CalendarEventItem[] = []
+      for (const item of data.items ?? []) {
+        if (item.status === 'cancelled') continue
+        const allDay = Boolean(!item.start?.dateTime && item.start?.date)
+        const startStr = item.start?.dateTime ?? item.start?.date
+        const endStr = item.end?.dateTime ?? item.end?.date
+        if (!startStr || !endStr) continue
+        const startMs = Date.parse(startStr)
+        const endMs = Date.parse(endStr)
+        if (Number.isNaN(startMs) || Number.isNaN(endMs)) continue
+        events.push({
+          id: item.id || `${startMs}`,
+          summary: (item.summary ?? '').trim() || 'Встреча',
+          startMs,
+          endMs,
+          allDay,
+        })
+      }
+
+      return events
     },
 
     async createEvent({ refreshToken, summary, startIso, endIso, timeZone }) {

@@ -15,6 +15,7 @@ import {
 import {
   UnauthorizedError,
   clearDeviceToken,
+  fetchHome,
   fetchInbox,
   fetchMessageCard,
   getPairingStatus,
@@ -25,9 +26,9 @@ import {
   skipMessage,
   startPairing,
   subscribeInboxStream,
-  updateSettings,
-  type ChatView,
   type FeedMode,
+  type HomeMeetingItem,
+  type HomeResponse,
   type InboxCounts,
   type InboxItem,
   type MessageCard,
@@ -88,20 +89,44 @@ const VOICE_BODY_NAME = 'voice-body'
 const VOICE_CONFIRM_LIST_ID = 42
 const VOICE_CONFIRM_LIST_NAME = 'voice-cf-list'
 
+const HOME_HEADER_ID = 50
+const HOME_HEADER_NAME = 'home-header'
+const HOME_SUMMARY_ID = 51
+const HOME_SUMMARY_NAME = 'home-summary'
+const HOME_LIST_ID = 52
+const HOME_LIST_NAME = 'home-list'
+
+const MEETINGS_HEADER_ID = 55
+const MEETINGS_HEADER_NAME = 'meet-header'
+const MEETINGS_LIST_ID = 56
+const MEETINGS_LIST_NAME = 'meet-list'
+const MEETINGS_EMPTY_ID = 57
+const MEETINGS_EMPTY_NAME = 'meet-empty'
+
+const SOON_HEADER_ID = 60
+const SOON_HEADER_NAME = 'soon-header'
+const SOON_BODY_ID = 61
+const SOON_BODY_NAME = 'soon-body'
+
 const SEND_UNDO_SECONDS = 1
 
 const MENU_REFRESH_ID = 1
-const MENU_SKIP_ID = 2
-const MENU_BACK_ID = 3
-const MENU_MODE_ID = 4
-const MENU_CHAT_VIEW_ID = 5
-const MENU_READ_FULL_ID = 6
+const MENU_HOME_ID = 2
+const MENU_NEW_NOTE_ID = 3
+const MENU_MY_NOTES_ID = 4
 const MENU_RECORD_VOICE_ID = 7
+
+type HomeAction = 'messages' | 'meetings' | 'digest'
 
 type AppScreen =
   | 'pairing'
   | 'pairing-expired'
   | 'pairing-error'
+  | 'home'
+  | 'home-error'
+  | 'meetings'
+  | 'meeting-card'
+  | 'coming-soon'
   | 'inbox'
   | 'inbox-error'
   | 'card'
@@ -119,23 +144,19 @@ function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeLis
   return envelope.eventType ?? OsEventTypeList.CLICK_EVENT
 }
 
-function buildMenuObject(includeCardActions = false, includeVoiceToggle = false): MenuContainerProperty {
+function buildMenuObject(includeVoiceReply = false, includeVoiceToggle = false): MenuContainerProperty {
   const menuItems: MenuItemProperty[] = []
-  if (includeCardActions || includeVoiceToggle) {
+  if (includeVoiceReply || includeVoiceToggle) {
     menuItems.push(
-      new MenuItemProperty({ itemName: 'Record voice', itemID: MENU_RECORD_VOICE_ID }),
+      new MenuItemProperty({ itemName: 'Ответить голосом', itemID: MENU_RECORD_VOICE_ID }),
     )
   }
   menuItems.push(
-    new MenuItemProperty({ itemName: 'Refresh', itemID: MENU_REFRESH_ID }),
+    new MenuItemProperty({ itemName: 'Новая заметка', itemID: MENU_NEW_NOTE_ID }),
+    new MenuItemProperty({ itemName: 'Мои заметки', itemID: MENU_MY_NOTES_ID }),
+    new MenuItemProperty({ itemName: 'Главная', itemID: MENU_HOME_ID }),
+    new MenuItemProperty({ itemName: 'Обновить', itemID: MENU_REFRESH_ID }),
   )
-  if (includeCardActions) {
-    menuItems.push(
-      new MenuItemProperty({ itemName: 'Full text', itemID: MENU_READ_FULL_ID }),
-      new MenuItemProperty({ itemName: 'Skip', itemID: MENU_SKIP_ID }),
-      new MenuItemProperty({ itemName: 'Back', itemID: MENU_BACK_ID }),
-    )
-  }
   return new MenuContainerProperty({ menuItems })
 }
 
@@ -189,6 +210,335 @@ function clampVisualAndUtf8(input: string, maxUnits: number, maxBytes: number): 
     out = next
   }
   return out
+}
+
+function formatSplitListLine(left: string, right: string): string {
+  const rightClean = clampUtf8(right, 30)
+  const rightBytes = utf8Encoder.encode(rightClean).length
+  const maxLeftBytes = Math.max(8, 63 - rightBytes - 2)
+  const leftClean = clampUtf8(left, maxLeftBytes)
+  const leftBytes = utf8Encoder.encode(leftClean).length
+  const targetUnits = 62
+  const desiredSpaces = Math.max(
+    2,
+    Math.round(targetUnits - visualWidthUnits(leftClean) - visualWidthUnits(rightClean)),
+  )
+  const maxSpacesByBytes = Math.max(1, 63 - leftBytes - rightBytes)
+  const padCount = Math.min(desiredSpaces, maxSpacesByBytes)
+  return clampUtf8(`${leftClean}${' '.repeat(padCount)}${rightClean}`, 63)
+}
+
+function formatSplitHeaderLine(left: string, right: string): string {
+  const targetUnits = 64
+  const desiredSpaces = Math.max(
+    2,
+    Math.round(targetUnits - visualWidthUnits(left) - visualWidthUnits(right)),
+  )
+  return `${left}${' '.repeat(Math.min(desiredSpaces, 36))}${right}`
+}
+
+function getHomeActions(home: HomeResponse): Array<{ action: HomeAction; label: string }> {
+  const msgRight =
+    home.messages.total > 0
+      ? home.messages.urgent > 0
+        ? `${home.messages.total} · ${home.messages.urgent} срочное`
+        : `${home.messages.total}`
+      : 'нет'
+  const meetRight =
+    home.meetings.todayCount > 0 ? `${home.meetings.todayCount} сегодня` : 'нет'
+
+  const items: Array<{ action: HomeAction; label: string }> = [
+    { action: 'messages', label: formatSplitListLine('Сообщения', msgRight) },
+    { action: 'meetings', label: formatSplitListLine('Встречи', meetRight) },
+  ]
+  if (home.digest.enabled) {
+    items.push({
+      action: 'digest',
+      label: formatSplitListLine('Дайджест', String(home.digest.count)),
+    })
+  }
+  return items
+}
+
+function buildHomePayload(
+  home: HomeResponse | null,
+  overrideStatusText?: string,
+): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  listObject?: ListContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  if (!home) {
+    const header = new TextContainerProperty({
+      xPosition: 0,
+      yPosition: 0,
+      width: 576,
+      height: 44,
+      borderWidth: 0,
+      borderColor: 5,
+      paddingLength: 4,
+      containerID: HOME_HEADER_ID,
+      containerName: HOME_HEADER_NAME,
+      content: 'Главная',
+      isEventCapture: 0,
+    })
+    const body = new TextContainerProperty({
+      xPosition: 0,
+      yPosition: 46,
+      width: 576,
+      height: 242,
+      borderWidth: 0,
+      borderColor: 5,
+      paddingLength: 4,
+      containerID: HOME_SUMMARY_ID,
+      containerName: HOME_SUMMARY_NAME,
+      content: overrideStatusText ?? 'Загрузка…',
+      isEventCapture: 1,
+    })
+    return {
+      containerTotalNum: 2,
+      textObject: [header, body],
+      menuObject: buildMenuObject(false),
+    }
+  }
+
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: HOME_HEADER_ID,
+    containerName: HOME_HEADER_NAME,
+    content: formatSplitHeaderLine(home.nowTime, home.headerMeeting),
+    isEventCapture: 0,
+  })
+
+  const hasNewMessages = home.messages.total > 0
+  const summaryText = hasNewMessages
+    ? home.messages.senders.map((s) => `${s.name} ${s.count}`).join(' · ')
+    : `Всё тихо\n${home.nextMeetingLine ?? 'встреч нет'}`
+
+  const summary = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 46,
+    width: 576,
+    height: hasNewMessages ? 44 : 74,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: HOME_SUMMARY_ID,
+    containerName: HOME_SUMMARY_NAME,
+    content: summaryText,
+    isEventCapture: 0,
+  })
+
+  const actions = getHomeActions(home)
+  const list = new ListContainerProperty({
+    xPosition: 0,
+    yPosition: hasNewMessages ? 94 : 124,
+    width: 576,
+    height: hasNewMessages ? 194 : 164,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: HOME_LIST_ID,
+    containerName: HOME_LIST_NAME,
+    isEventCapture: 1,
+    itemContainer: new ListItemContainerProperty({
+      itemCount: actions.length,
+      itemWidth: 560,
+      isItemSelectBorderEn: 1,
+      itemName: actions.map((a) => a.label),
+    }),
+  })
+
+  return {
+    containerTotalNum: 3,
+    textObject: [header, summary],
+    listObject: [list],
+    menuObject: buildMenuObject(false),
+  }
+}
+
+function buildMeetingsPayload(home: HomeResponse | null): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  listObject?: ListContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const count = home?.meetings.todayCount ?? 0
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: MEETINGS_HEADER_ID,
+    containerName: MEETINGS_HEADER_NAME,
+    content: count > 0 ? `Встречи · ${count} сегодня` : 'Встречи · сегодня',
+    isEventCapture: 0,
+  })
+
+  if (!home || !home.meetings.connected) {
+    const empty = new TextContainerProperty({
+      xPosition: 0,
+      yPosition: 46,
+      width: 576,
+      height: 242,
+      borderWidth: 0,
+      borderColor: 5,
+      paddingLength: 4,
+      containerID: MEETINGS_EMPTY_ID,
+      containerName: MEETINGS_EMPTY_NAME,
+      content: 'Календарь не подключён\nОтправьте /google боту\n\n2x тап — Главная',
+      isEventCapture: 1,
+    })
+    return {
+      containerTotalNum: 2,
+      textObject: [header, empty],
+      menuObject: buildMenuObject(false),
+    }
+  }
+
+  const items = home.meetings.items
+  if (items.length === 0) {
+    const nextLine = home.nextMeetingLine ? `\n${home.nextMeetingLine}` : ''
+    const empty = new TextContainerProperty({
+      xPosition: 0,
+      yPosition: 46,
+      width: 576,
+      height: 242,
+      borderWidth: 0,
+      borderColor: 5,
+      paddingLength: 4,
+      containerID: MEETINGS_EMPTY_ID,
+      containerName: MEETINGS_EMPTY_NAME,
+      content: `Встреч сегодня нет${nextLine}\n\n2x тап — Главная`,
+      isEventCapture: 1,
+    })
+    return {
+      containerTotalNum: 2,
+      textObject: [header, empty],
+      menuObject: buildMenuObject(false),
+    }
+  }
+
+  const list = new ListContainerProperty({
+    xPosition: 0,
+    yPosition: 46,
+    width: 576,
+    height: 242,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: MEETINGS_LIST_ID,
+    containerName: MEETINGS_LIST_NAME,
+    isEventCapture: 1,
+    itemContainer: new ListItemContainerProperty({
+      itemCount: items.length,
+      itemWidth: 560,
+      isItemSelectBorderEn: 1,
+      itemName: items.map((ev) => {
+        const right =
+          ev.minutesUntil !== null && ev.minutesUntil < 60
+            ? `через ${ev.minutesUntil} мин`
+            : ev.startTime
+        return formatSplitListLine(ev.title, right)
+      }),
+    }),
+  })
+
+  return {
+    containerTotalNum: 2,
+    textObject: [header],
+    listObject: [list],
+    menuObject: buildMenuObject(false),
+  }
+}
+
+function buildMeetingCardPayload(ev: HomeMeetingItem): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const soonPart =
+    ev.minutesUntil !== null && ev.minutesUntil < 60 ? ` · через ${ev.minutesUntil} мин` : ''
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: MEETINGS_HEADER_ID,
+    containerName: MEETINGS_HEADER_NAME,
+    content: clampUtf8(ev.title, 63),
+    isEventCapture: 0,
+  })
+  const body = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 46,
+    width: 576,
+    height: 242,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: MEETINGS_EMPTY_ID,
+    containerName: MEETINGS_EMPTY_NAME,
+    content: `${ev.startTime} - ${ev.endTime}${soonPart}\n\n2x тап — назад`,
+    isEventCapture: 1,
+  })
+  return {
+    containerTotalNum: 2,
+    textObject: [header, body],
+    menuObject: buildMenuObject(false),
+  }
+}
+
+function buildComingSoonPayload(title: string): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  return {
+    containerTotalNum: 2,
+    textObject: [
+      new TextContainerProperty({
+        xPosition: 0,
+        yPosition: 0,
+        width: 576,
+        height: 44,
+        borderWidth: 0,
+        borderColor: 5,
+        paddingLength: 4,
+        containerID: SOON_HEADER_ID,
+        containerName: SOON_HEADER_NAME,
+        content: title,
+        isEventCapture: 0,
+      }),
+      new TextContainerProperty({
+        xPosition: 0,
+        yPosition: 46,
+        width: 576,
+        height: 242,
+        borderWidth: 0,
+        borderColor: 5,
+        paddingLength: 4,
+        containerID: SOON_BODY_ID,
+        containerName: SOON_BODY_NAME,
+        content: 'Скоро\n\n2x тап — назад',
+        isEventCapture: 1,
+      }),
+    ],
+    menuObject: buildMenuObject(false),
+  }
 }
 
 function formatInboxListLine(item: InboxItem): string {
@@ -279,7 +629,7 @@ function buildInboxPayload(
       paddingLength: 4,
       containerID: INBOX_EMPTY_ID,
       containerName: INBOX_EMPTY_NAME,
-      content: overrideEmptyText ?? 'All clear ✓',
+      content: overrideEmptyText ?? 'Всё тихо',
       isEventCapture: 1,
     })
 
@@ -640,9 +990,15 @@ export async function startGlassesApp(): Promise<void> {
   let activePairRunId = 0
   let disposed = false
 
+  let homeData: HomeResponse | null = null
+  let homeSelectedIndex = 0
+  let lastHomeSignature = ''
+  let isRefreshingHome = false
+  let meetingSelectedIndex = 0
+  let preSoonScreen: AppScreen = 'home'
+
   let inboxItems: InboxItem[] = []
   let feedMode: FeedMode = 'urgent'
-  let chatView: ChatView = 'new_only'
   let inboxCounts: InboxCounts = { urgent: 0, all: 0 }
   let selectedIndex = 0
   let lastInboxRebuildAt = 0
@@ -775,7 +1131,6 @@ export async function startGlassesApp(): Promise<void> {
         forceRebuild || screen === 'inbox-error' || nextSig !== lastInboxSignature
       screen = 'inbox'
       feedMode = data.mode
-      chatView = data.chatView
       inboxCounts = data.counts
       inboxItems = data.items
       if (selectedIndex >= inboxItems.length) {
@@ -842,10 +1197,186 @@ export async function startGlassesApp(): Promise<void> {
     }
   }
 
+  async function refreshHomeNow(
+    prefetched?: Promise<HomeResponse>,
+    forceRebuild = false,
+  ): Promise<void> {
+    if (disposed || (screen !== 'home' && screen !== 'home-error') || isRefreshingHome) {
+      return
+    }
+    isRefreshingHome = true
+    try {
+      const data = await (prefetched ?? fetchHome(bridge))
+      if (disposed || (screen !== 'home' && screen !== 'home-error')) return
+      const nextSig = JSON.stringify({
+        nowTime: data.nowTime,
+        headerMeeting: data.headerMeeting,
+        nextMeetingLine: data.nextMeetingLine,
+        messages: data.messages,
+        meetingsToday: data.meetings.todayCount,
+        digest: data.digest,
+      })
+      const shouldRebuild =
+        forceRebuild || screen === 'home-error' || nextSig !== lastHomeSignature
+      screen = 'home'
+      homeData = data
+      const actions = getHomeActions(data)
+      if (homeSelectedIndex >= actions.length) {
+        homeSelectedIndex = 0
+      }
+      lastInboxRebuildAt = Date.now()
+      renderPhoneInbox(data.messages.total)
+      if (shouldRebuild) {
+        lastHomeSignature = nextSig
+        const rebuilt = await bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildHomePayload(data)),
+        )
+        if (!rebuilt) {
+          lastHomeSignature = ''
+          console.warn('[home] rebuildPageContainer returned false')
+        }
+      }
+    } catch (err) {
+      lastHomeSignature = ''
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        const msg = err instanceof Error ? err.message : 'Load failed'
+        console.warn('[home] refresh failed:', msg)
+        screen = 'home-error'
+        renderPhoneError(msg, () => {
+          void refreshHomeNow(undefined, true)
+        })
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildHomePayload(null, `Ошибка: ${msg}\nТап — повторить`)),
+        )
+      }
+    } finally {
+      isRefreshingHome = false
+    }
+  }
+
+  function scheduleHomeRefresh(immediate = false): void {
+    if (disposed || (screen !== 'home' && screen !== 'home-error')) return
+
+    if (immediate) {
+      if (pendingInboxTimer !== null) {
+        window.clearTimeout(pendingInboxTimer)
+        pendingInboxTimer = null
+      }
+      void refreshHomeNow(undefined, true)
+      return
+    }
+
+    const elapsed = Date.now() - lastInboxRebuildAt
+    if (elapsed >= INBOX_REBUILD_THROTTLE_MS && pendingInboxTimer === null && !isRefreshingHome) {
+      void refreshHomeNow()
+      return
+    }
+
+    if (pendingInboxTimer === null) {
+      const delay = Math.max(0, INBOX_REBUILD_THROTTLE_MS - elapsed)
+      pendingInboxTimer = window.setTimeout(() => {
+        pendingInboxTimer = null
+        void refreshHomeNow()
+      }, delay)
+    }
+  }
+
+  async function enterHome(isStartup: boolean): Promise<void> {
+    stopPolling()
+    stopSendTimer()
+    resetVoiceState(true)
+    activeCard = null
+    cardDraftIndex = 0
+    screen = 'home'
+    lastHomeSignature = ''
+    renderPhoneInbox(0)
+
+    const initialFetch = fetchHome(bridge)
+    if (isStartup) {
+      await bridge.createStartUpPageContainer(
+        new CreateStartUpPageContainer(buildHomePayload(null, 'Загрузка…')),
+      )
+    }
+
+    lastInboxRebuildAt = Date.now()
+    await refreshHomeNow(initialFetch, true)
+    if (!disposed && screen === 'home') {
+      startSseSubscription()
+    }
+  }
+
+  async function returnToHome(): Promise<void> {
+    stopSendTimer()
+    resetVoiceState(true)
+    activeCard = null
+    cardDraftIndex = 0
+    screen = 'home'
+    lastHomeSignature = ''
+    await refreshHomeNow(undefined, true)
+  }
+
+  async function openMeetingsFromHome(): Promise<void> {
+    if (disposed) return
+    screen = 'meetings'
+    meetingSelectedIndex = 0
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(buildMeetingsPayload(homeData)),
+    )
+  }
+
+  async function openMeetingCard(ev: HomeMeetingItem): Promise<void> {
+    if (disposed) return
+    screen = 'meeting-card'
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(buildMeetingCardPayload(ev)),
+    )
+  }
+
+  async function openComingSoon(title: string): Promise<void> {
+    if (disposed) return
+    if (screen !== 'coming-soon') {
+      preSoonScreen = screen
+    }
+    screen = 'coming-soon'
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(buildComingSoonPayload(title)),
+    )
+  }
+
+  async function returnFromComingSoon(): Promise<void> {
+    if (disposed) return
+    if (preSoonScreen === 'inbox' || preSoonScreen === 'inbox-error') {
+      await returnToInbox()
+    } else if (preSoonScreen === 'meetings') {
+      await openMeetingsFromHome()
+    } else if (
+      (preSoonScreen === 'card' ||
+        preSoonScreen === 'card-full' ||
+        preSoonScreen === 'transcript-pages') &&
+      activeCard
+    ) {
+      if (preSoonScreen === 'transcript-pages') {
+        await openTranscriptPages()
+      } else if (preSoonScreen === 'card-full') {
+        await openCardFull()
+      } else {
+        await backFromCardFull()
+      }
+    } else {
+      await returnToHome()
+    }
+  }
+
   function startSseSubscription(): void {
     stopInboxSync()
     stopSse = subscribeInboxStream(bridge, {
       onInbox: (evt) => {
+        if (screen === 'home' || screen === 'home-error') {
+          scheduleHomeRefresh(false)
+          return
+        }
         if (screen === 'inbox' || screen === 'inbox-error') {
           scheduleInboxRefresh(false)
           return
@@ -864,7 +1395,9 @@ export async function startGlassesApp(): Promise<void> {
     })
     fallbackPollTimer = window.setInterval(() => {
       if (disposed) return
-      if (screen === 'inbox') {
+      if (screen === 'home' || screen === 'home-error') {
+        scheduleHomeRefresh(false)
+      } else if (screen === 'inbox') {
         scheduleInboxRefresh(false)
       } else if (
         (screen === 'card-full' || screen === 'card' || screen === 'transcript-pages') &&
@@ -875,28 +1408,6 @@ export async function startGlassesApp(): Promise<void> {
     }, 10_000)
   }
 
-  async function enterInbox(isStartup: boolean): Promise<void> {
-    stopPolling()
-    screen = 'inbox'
-    lastInboxSignature = ''
-    renderPhoneInbox(0)
-
-    const initialFetch = fetchInbox(bridge)
-    if (isStartup) {
-      await bridge.createStartUpPageContainer(
-        new CreateStartUpPageContainer(
-          buildInboxPayload([], feedMode, inboxCounts, 'Loading…'),
-        ),
-      )
-    }
-
-    lastInboxRebuildAt = Date.now()
-    await refreshInboxNow(initialFetch, true)
-    if (!disposed && screen === 'inbox') {
-      startSseSubscription()
-    }
-  }
-
   async function returnToInbox(): Promise<void> {
     stopSendTimer()
     resetVoiceState(true)
@@ -905,44 +1416,6 @@ export async function startGlassesApp(): Promise<void> {
     screen = 'inbox'
     lastInboxSignature = ''
     await refreshInboxNow(undefined, true)
-  }
-
-  async function applySettingsPatch(patch: {
-    feedMode?: FeedMode
-    chatView?: ChatView
-  }): Promise<void> {
-    if (disposed || isActionInFlight) return
-    isActionInFlight = true
-    try {
-      const updated = await updateSettings(bridge, patch)
-      if (disposed) return
-      feedMode = updated.feedMode
-      chatView = updated.chatView
-      selectedIndex = 0
-      stopSendTimer()
-      activeCard = null
-      cardDraftIndex = 0
-      screen = 'inbox'
-      await refreshInboxNow()
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        await handleUnauthorized()
-      } else {
-        console.warn('[settings] update failed:', err instanceof Error ? err.message : err)
-      }
-    } finally {
-      isActionInFlight = false
-    }
-  }
-
-  async function toggleFeedMode(): Promise<void> {
-    const nextMode: FeedMode = feedMode === 'urgent' ? 'all' : 'urgent'
-    await applySettingsPatch({ feedMode: nextMode })
-  }
-
-  async function toggleChatView(): Promise<void> {
-    const nextView: ChatView = chatView === 'new_only' ? 'with_history' : 'new_only'
-    await applySettingsPatch({ chatView: nextView })
   }
 
   async function refreshActiveCardInPlace(targetId?: number): Promise<void> {
@@ -1484,7 +1957,7 @@ export async function startGlassesApp(): Promise<void> {
 
         if (res.status === 'paired') {
           await saveDeviceToken(bridge, res.deviceToken)
-          await enterInbox(false)
+          await enterHome(false)
           return
         }
 
@@ -1515,7 +1988,7 @@ export async function startGlassesApp(): Promise<void> {
   const storedToken = await getStoredDeviceToken(bridge)
 
   if (storedToken) {
-    await enterInbox(true)
+    await enterHome(true)
   } else {
     screen = 'pairing'
     renderPhoneLoading('Connecting to Pager…')
@@ -1604,6 +2077,18 @@ export async function startGlassesApp(): Promise<void> {
         void returnToActiveCard()
         return
       }
+      if (screen === 'coming-soon') {
+        void returnFromComingSoon()
+        return
+      }
+      if (screen === 'meeting-card') {
+        void openMeetingsFromHome()
+        return
+      }
+      if (screen === 'meetings' || screen === 'inbox' || screen === 'inbox-error') {
+        void returnToHome()
+        return
+      }
       if (screen === 'transcript-pages') {
         void returnToInbox()
         return
@@ -1645,39 +2130,27 @@ export async function startGlassesApp(): Promise<void> {
         }
         return
       }
-      if (itemId === MENU_MODE_ID) {
-        if (screen === 'inbox' || screen === 'inbox-error' || screen === 'card') {
-          void toggleFeedMode()
-        }
-      } else if (itemId === MENU_CHAT_VIEW_ID) {
-        if (screen === 'inbox' || screen === 'inbox-error' || screen === 'card') {
-          void toggleChatView()
-        }
+      if (itemId === MENU_NEW_NOTE_ID) {
+        void openComingSoon('Новая заметка')
+      } else if (itemId === MENU_MY_NOTES_ID) {
+        void openComingSoon('Мои заметки')
+      } else if (itemId === MENU_HOME_ID) {
+        void returnToHome()
       } else if (itemId === MENU_REFRESH_ID) {
-        if (screen === 'inbox') {
+        if (screen === 'home' || screen === 'home-error') {
+          scheduleHomeRefresh(true)
+        } else if (screen === 'meetings') {
+          void fetchHome(bridge).then((data) => {
+            homeData = data
+            return openMeetingsFromHome()
+          })
+        } else if (screen === 'inbox' || screen === 'inbox-error') {
           scheduleInboxRefresh(true)
         } else if (
           (screen === 'card' || screen === 'card-full' || screen === 'transcript-pages') &&
           activeCard
         ) {
           void openCard(activeCard.id)
-        }
-      } else if (itemId === MENU_READ_FULL_ID && (screen === 'card' || screen === 'card-full')) {
-        if (activeCard?.media) {
-          void openTranscriptPages()
-        } else {
-          void openCardFull()
-        }
-      } else if (
-        itemId === MENU_SKIP_ID &&
-        (screen === 'card' || screen === 'card-full' || screen === 'transcript-pages')
-      ) {
-        void skipActiveCard()
-      } else if (itemId === MENU_BACK_ID) {
-        if (screen === 'transcript-pages') {
-          void backFromCardFull()
-        } else if (screen === 'card' || screen === 'card-full') {
-          void returnToInbox()
         }
       }
       return
@@ -1703,7 +2176,11 @@ export async function startGlassesApp(): Promise<void> {
     }
 
     if (event.listEvent?.currentSelectItemIndex !== undefined) {
-      if (screen === 'inbox') {
+      if (screen === 'home') {
+        homeSelectedIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'meetings') {
+        meetingSelectedIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'inbox') {
         selectedIndex = event.listEvent.currentSelectItemIndex
       } else if (screen === 'card') {
         cardDraftIndex = event.listEvent.currentSelectItemIndex
@@ -1742,6 +2219,39 @@ export async function startGlassesApp(): Promise<void> {
       }
       if (screen === 'pairing-error' || screen === 'pairing-expired') {
         void beginPairingFlow()
+        return
+      }
+
+      if (screen === 'coming-soon') {
+        void returnFromComingSoon()
+        return
+      }
+
+      if (screen === 'home-error') {
+        void refreshHomeNow(undefined, true)
+        return
+      }
+
+      if (screen === 'home' && homeData) {
+        const actions = getHomeActions(homeData)
+        const idx = event.listEvent?.currentSelectItemIndex ?? homeSelectedIndex
+        const chosen = actions[idx]
+        if (chosen?.action === 'messages') {
+          void returnToInbox()
+        } else if (chosen?.action === 'meetings') {
+          void openMeetingsFromHome()
+        } else if (chosen?.action === 'digest') {
+          void openComingSoon('Дайджест')
+        }
+        return
+      }
+
+      if (screen === 'meetings' && homeData && homeData.meetings.items.length > 0) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? meetingSelectedIndex
+        const ev = homeData.meetings.items[idx]
+        if (ev) {
+          void openMeetingCard(ev)
+        }
         return
       }
 

@@ -4,6 +4,7 @@ import type { AppDb } from './db/index.js'
 import { logger } from './lib/logger.js'
 import { createBearerAuthMiddleware, type AuthEnv } from './middleware/auth.js'
 import { createGoogleAuthRouter, type GoogleAuthRouterOptions } from './routes/auth-google.js'
+import { createHomeRouter } from './routes/home.js'
 import { createInboxRouter } from './routes/inbox.js'
 import {
   createMsgRouter,
@@ -58,6 +59,10 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
 
   app.use('/api/*', createBearerAuthMiddleware(options?.db))
   app.route('/api/pair', createPairRouter({ db: options?.db, ...options?.pair }))
+  app.route(
+    '/api/home',
+    createHomeRouter({ db: options?.db, calendarClient: options?.calendarClient }),
+  )
   app.route('/api/settings', createSettingsRouter({ db: options?.db }))
   app.route('/api/inbox', createInboxRouter({ db: options?.db }))
   app.route(
