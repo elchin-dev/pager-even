@@ -827,8 +827,18 @@ export async function startGlassesApp(): Promise<void> {
   function startSseSubscription(): void {
     stopInboxSync()
     stopSse = subscribeInboxStream(bridge, {
-      onInbox: () => {
-        scheduleInboxRefresh(false)
+      onInbox: (evt) => {
+        if (screen === 'inbox' || screen === 'inbox-error') {
+          scheduleInboxRefresh(false)
+          return
+        }
+        if (
+          (screen === 'card-full' || screen === 'card' || screen === 'transcript-pages') &&
+          activeCard &&
+          (!evt?.chatId || evt.chatId === activeCard.chatId)
+        ) {
+          void refreshActiveCardInPlace(evt?.messageId)
+        }
       },
       onUnauthorized: () => {
         void handleUnauthorized()
@@ -912,6 +922,58 @@ export async function startGlassesApp(): Promise<void> {
   async function toggleChatView(): Promise<void> {
     const nextView: ChatView = chatView === 'new_only' ? 'with_history' : 'new_only'
     await applySettingsPatch({ chatView: nextView })
+  }
+
+  async function refreshActiveCardInPlace(targetId?: number): Promise<void> {
+    if (
+      disposed ||
+      isActionInFlight ||
+      isRecordingActive ||
+      !activeCard ||
+      (screen !== 'card-full' && screen !== 'card' && screen !== 'transcript-pages')
+    ) {
+      return
+    }
+    const currentScreen = screen
+    isActionInFlight = true
+    try {
+      const card = await fetchMessageCard(bridge, targetId ?? activeCard.id)
+      if (disposed || screen !== currentScreen) return
+      activeCard = card
+      if (currentScreen === 'card') {
+        cardDraftIndex = 0
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildCardPayload(card)),
+        )
+      } else if (currentScreen === 'transcript-pages') {
+        if (card.media?.transcribed && card.transcript) {
+          transcriptPages = paginateLensText(card.transcript, 180)
+          transcriptPageIndex = Math.min(transcriptPageIndex, transcriptPages.length - 1)
+          await bridge.rebuildPageContainer(
+            new RebuildPageContainer(
+              buildTranscriptPagePayload(card, transcriptPages, transcriptPageIndex),
+            ),
+          )
+        } else {
+          screen = 'card-full'
+          await bridge.rebuildPageContainer(
+            new RebuildPageContainer(buildCardFullPayload(card)),
+          )
+        }
+      } else {
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildCardFullPayload(card)),
+        )
+      }
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        console.warn('[card] live refresh failed:', err instanceof Error ? err.message : err)
+      }
+    } finally {
+      isActionInFlight = false
+    }
   }
 
   async function openCard(id: number): Promise<void> {

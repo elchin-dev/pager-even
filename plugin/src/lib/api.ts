@@ -219,10 +219,16 @@ export async function sendVoiceReply(
   return parseJson<{ ok: true; tgMessageId: number; durationSec: number }>(res)
 }
 
+export interface InboxStreamEvent {
+  type?: string
+  messageId?: number
+  chatId?: number
+}
+
 export function subscribeInboxStream(
   bridge: EvenAppBridge,
   handlers: {
-    onInbox: () => void
+    onInbox: (event?: InboxStreamEvent) => void
     onUnauthorized: () => void
   },
 ): () => void {
@@ -281,9 +287,19 @@ export function subscribeInboxStream(
           buffer = buffer.slice(sepIndex + 2)
 
           let eventName = 'message'
+          let eventData: InboxStreamEvent | undefined
           for (const line of rawBlock.split('\n')) {
             if (line.startsWith('event:')) {
               eventName = line.slice(6).trim()
+            } else if (line.startsWith('data:')) {
+              const rawJson = line.slice(5).trim()
+              if (rawJson) {
+                try {
+                  eventData = JSON.parse(rawJson) as InboxStreamEvent
+                } catch {
+                  // ignore non-JSON SSE data
+                }
+              }
             }
           }
 
@@ -293,7 +309,7 @@ export function subscribeInboxStream(
             }
             hasConnectedOnce = true
           } else if (eventName === 'inbox') {
-            handlers.onInbox()
+            handlers.onInbox(eventData)
           }
 
           sepIndex = buffer.indexOf('\n\n')

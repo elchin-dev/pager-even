@@ -142,6 +142,11 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
   assert.equal(historyCard.hasMore, true)
   assert.match(historyCard.fullText, /Азиз Каримов: Привет! Пришли КП до 17:00/)
   assert.match(historyCard.fullText, /You: Да, пришлю до 17:00/)
+  assert.ok(
+    historyCard.fullText.indexOf('You: Да, пришлю до 17:00') <
+      historyCard.fullText.indexOf('Азиз Каримов: Привет! Пришли КП до 17:00'),
+    'newest message should appear at the top of fullText',
+  )
 
   const actionRows = db.select().from(actions).all()
   assert.equal(actionRows.length, 1)

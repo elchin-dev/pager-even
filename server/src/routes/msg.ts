@@ -205,7 +205,6 @@ export function createMsgRouter(options?: {
       .orderBy(desc(messages.receivedAt), desc(messages.id))
       .limit(8)
       .all()
-      .reverse()
 
     const displayRows = threadRows.length > 0 ? threadRows : [row]
     const fullText = displayRows
