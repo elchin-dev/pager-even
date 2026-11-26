@@ -1,8 +1,14 @@
+import { and, desc, eq, gt } from 'drizzle-orm'
 import { Hono } from 'hono'
-import type { LlmProvider } from '../ai/provider.js'
+import { z } from 'zod'
+import { getProviderForUser, type LlmProvider } from '../ai/provider.js'
 import { getDb, type AppDb } from '../db/index.js'
+import { googleAccounts, messages, notes, users } from '../db/schema.js'
+import { decryptSecret } from '../lib/crypto.js'
 import {
   createDefaultGoogleCalendarClient,
+  hasCalendarWriteScope,
+  resolveUserTimeZone,
   type GoogleCalendarClient,
 } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
@@ -98,6 +104,168 @@ export function createMeetingsRouter(options?: {
     }
   })
 
+  router.post('/create', async (c) => {
+    const bodySchema = z.object({
+      title: z.string().trim().min(1).max(120),
+      startIso: z.string().trim().min(10),
+      endIso: z.string().trim().min(10),
+      description: z.string().trim().max(2000).optional(),
+    })
+
+    let rawBody: unknown
+    try {
+      rawBody = await c.req.json()
+    } catch {
+      return c.json({ error: 'invalid_json' }, 400)
+    }
+    const parsed = bodySchema.safeParse(rawBody)
+    if (!parsed.success) return c.json({ error: 'invalid_body' }, 400)
+
+    const authUser = c.get('authUser')
+    const db = options?.db ?? getDb()
+    const account = db
+      .select()
+      .from(googleAccounts)
+      .where(eq(googleAccounts.userId, authUser.id))
+      .get()
+    if (!account) return c.json({ error: 'calendar_not_connected' }, 400)
+    if (!hasCalendarWriteScope(account.scope)) {
+      return c.json({ error: 'calendar_readonly' }, 403)
+    }
+
+    const userRow = db
+      .select({ tz: users.tz })
+      .from(users)
+      .where(eq(users.id, authUser.id))
+      .get()
+    const tz = resolveUserTimeZone(userRow?.tz)
+
+    try {
+      const refreshToken = decryptSecret(account.refreshTokenEnc)
+      const created = await calendarClient.createEvent({
+        refreshToken,
+        summary: parsed.data.title,
+        description: parsed.data.description,
+        startIso: parsed.data.startIso,
+        endIso: parsed.data.endIso,
+        timeZone: tz,
+      })
+      logger.info('meeting_created', { userId: authUser.id, hasBrief: Boolean(parsed.data.description) })
+      return c.json({ ok: true, eventId: created.eventId }, 201)
+    } catch (err) {
+      logger.warn('meeting_create_failed', {
+        userId: authUser.id,
+        errorName: err instanceof Error ? err.name : 'unknown',
+      })
+      return c.json({ error: 'meeting_create_failed' }, 502)
+    }
+  })
+
+  router.post('/brief-voice', async (c) => {
+    const authUser = c.get('authUser')
+    const db = options?.db ?? getDb()
+    const chatIdQuery = Number(c.req.query('chatId') ?? 0)
+    const prevSaid = (c.req.query('prev') ?? '').trim()
+
+    const reader = c.req.raw.body?.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value) {
+          total += value.byteLength
+          if (total > 4 * 1024 * 1024) {
+            await reader.cancel()
+            return c.json({ error: 'payload_too_large' }, 413)
+          }
+          chunks.push(value)
+        }
+      }
+    }
+    const wavBuf = Buffer.concat(chunks)
+    if (wavBuf.length <= 44) return c.json({ error: 'invalid_wav' }, 400)
+
+    const provider = options?.getProvider
+      ? options.getProvider(authUser.id)
+      : getProviderForUser(authUser.id, { db })
+    if (!provider?.transcribeAudio) return c.json({ error: 'stt_unavailable' }, 503)
+
+    try {
+      const { transcript } = await provider.transcribeAudio(wavBuf, 'audio/wav')
+      const spoken = transcript.trim()
+      if (!spoken) return c.json({ error: 'empty_transcript' }, 422)
+
+      const userSaid = prevSaid ? `${prevSaid} ${spoken}`.slice(0, 600) : spoken.slice(0, 600)
+
+      let aiAdded = ''
+      if (chatIdQuery) {
+        const now = nowFn()
+        const chatRows = db
+          .select({
+            fromName: messages.fromName,
+            isFromOwner: messages.isFromOwner,
+            text: messages.text,
+          })
+          .from(messages)
+          .where(
+            and(
+              eq(messages.userId, authUser.id),
+              eq(messages.chatId, chatIdQuery),
+              gt(messages.expiresAt, now),
+            ),
+          )
+          .orderBy(desc(messages.receivedAt), desc(messages.id))
+          .limit(6)
+          .all()
+          .reverse()
+
+        if (chatRows.length > 0) {
+          const chatLog = chatRows
+            .map((r) => `${r.isFromOwner ? 'Me' : r.fromName}: ${r.text.slice(0, 160)}`)
+            .join('\n')
+          try {
+            const schema = z.object({ context: z.string().min(1).max(160) })
+            const res = await provider.completeJson({
+              system: `Extract important meeting context from the Telegram chat (what the other person asked for or expects) in 1 concise Russian sentence (<= 90 chars). Output ONLY raw JSON: {"context": string}.`,
+              user: `My voice brief: ${userSaid}\n\nChat:\n${chatLog}`,
+              schema,
+              maxTokens: 90,
+            })
+            aiAdded = toOriginalLens(res.context, 90)
+          } catch {
+            const lastIncoming = [...chatRows].reverse().find((r) => !r.isFromOwner)
+            if (lastIncoming) {
+              aiAdded = toOriginalLens(lastIncoming.text, 80)
+            }
+          }
+        }
+      }
+
+      const combinedDescription = [
+        `Бриф: ${userSaid}`,
+        aiAdded ? `Из переписки: ${aiAdded}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      logger.info('meeting_voice_brief_prepared', {
+        userId: authUser.id,
+        userLen: userSaid.length,
+        aiLen: aiAdded.length,
+      })
+
+      return c.json({
+        userSaid: toOriginalLens(userSaid, 120),
+        aiAdded,
+        combinedDescription,
+      })
+    } catch {
+      return c.json({ error: 'brief_voice_failed' }, 502)
+    }
+  })
+
   router.get('/:id', async (c) => {
     const eventId = c.req.param('id')?.trim()
     if (!eventId) {
@@ -142,6 +310,12 @@ export function createMeetingsRouter(options?: {
       const shiftedStart = formatTimeHHMM(ev.startMs + 30 * 60_000, tz)
       const shiftedEnd = formatTimeHHMM(ev.endMs + 30 * 60_000, tz)
 
+      const noteRows = db
+        .select({ id: notes.id })
+        .from(notes)
+        .where(and(eq(notes.userId, authUser.id), eq(notes.meetingEventId, ev.id)))
+        .all()
+
       const brief: MeetingBriefView = {
         id: ev.id,
         title: toOriginalLens(ev.summary, 48) || 'Встреча',
@@ -155,7 +329,7 @@ export function createMeetingsRouter(options?: {
           .filter(Boolean)
           .slice(0, 3),
         summary,
-        notesCount: 0,
+        notesCount: noteRows.length,
         canSendLate: matchedChats.length > 0,
         lateRecipientName: matchedChats[0]?.fromName
           ? toOriginalLens(matchedChats[0].fromName, 20)

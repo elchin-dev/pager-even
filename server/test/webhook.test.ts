@@ -12,7 +12,7 @@ interface CapturedApiCall {
   payload: Record<string, unknown>
 }
 
-test('migrations create all 8 tables and webhook handles start, business_connection, business_message, and ping/pong', async () => {
+test('migrations create all tables and webhook handles start, business_connection, business_message, and ping/pong', async () => {
   const { sqlite, db } = createDb(':memory:')
   runMigrations(db)
 
@@ -25,11 +25,15 @@ test('migrations create all 8 tables and webhook handles start, business_connect
     [
       'actions',
       'ai_settings',
+      'channels',
       'devices',
+      'digest_posts',
       'google_accounts',
       'link_tokens',
       'messages',
+      'notes',
       'pair_codes',
+      'promises',
       'sent_reminders',
       'user_settings',
       'users',

@@ -4,6 +4,9 @@ export interface GlassesReminderEvent {
   title: string
   subtitle: string
   eventId?: string
+  noteId?: number
+  promiseId?: number
+  chatId?: number
 }
 
 export type UserEvent =

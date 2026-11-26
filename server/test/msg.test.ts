@@ -108,7 +108,14 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
     body: JSON.stringify({ draftIndex: 0 }),
   })
   assert.equal(sendRes.status, 200)
-  assert.deepEqual(await sendRes.json(), { ok: true, tgMessageId: 777 })
+  const sendBody = (await sendRes.json()) as {
+    ok: boolean
+    tgMessageId: number
+    promiseSuggestion?: { defaultOption: { label: string } }
+  }
+  assert.equal(sendBody.ok, true)
+  assert.equal(sendBody.tgMessageId, 777)
+  assert.ok(sendBody.promiseSuggestion)
 
   assert.equal(sentCalls.length, 1)
   assert.equal(sentCalls[0]?.chatId, 5005)

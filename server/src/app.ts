@@ -3,6 +3,7 @@ import { cors } from 'hono/cors'
 import type { AppDb } from './db/index.js'
 import { logger } from './lib/logger.js'
 import { createBearerAuthMiddleware, type AuthEnv } from './middleware/auth.js'
+import { createDigestRouter } from './lib/digest-service.js'
 import { createGoogleAuthRouter, type GoogleAuthRouterOptions } from './routes/auth-google.js'
 import { createHomeRouter } from './routes/home.js'
 import { createInboxRouter } from './routes/inbox.js'
@@ -12,6 +13,7 @@ import {
   type SendTelegramMessageFn,
   type SendTelegramVoiceFn,
 } from './routes/msg.js'
+import { createNotesRouter, createPromisesRouter } from './routes/notes.js'
 import { createPairRouter, type PairRouterOptions } from './routes/pair.js'
 import { createSettingsRouter } from './routes/settings.js'
 import { createStreamRouter } from './routes/stream.js'
@@ -72,6 +74,15 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
       sendTelegramMessage: options?.sendTelegramMessage,
     }),
   )
+  app.route(
+    '/api/notes',
+    createNotesRouter({
+      db: options?.db,
+      calendarClient: options?.calendarClient,
+    }),
+  )
+  app.route('/api/promises', createPromisesRouter({ db: options?.db }))
+  app.route('/api/digest', createDigestRouter({ db: options?.db }))
   app.route('/api/settings', createSettingsRouter({ db: options?.db }))
   app.route('/api/inbox', createInboxRouter({ db: options?.db }))
   app.route(

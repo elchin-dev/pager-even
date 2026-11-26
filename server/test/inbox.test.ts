@@ -237,6 +237,9 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
     chatView: 'new_only',
     voiceEnabled: true,
     conflictAlerts: true,
+    meetingReminders: true,
+    briefAlerts: true,
+    taskReminders: true,
   })
 
   // Invalid settings rejected
@@ -442,6 +445,9 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
     chatView: 'new_only',
     voiceEnabled: false,
     conflictAlerts: true,
+    meetingReminders: true,
+    briefAlerts: true,
+    taskReminders: true,
   })
 
   // Now GET /api/inbox uses 'all' from user_settings, sorted by received_at desc

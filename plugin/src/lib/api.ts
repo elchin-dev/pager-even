@@ -116,6 +116,89 @@ export interface GlassesReminderEvent {
   title: string
   subtitle: string
   eventId?: string
+  noteId?: number
+  promiseId?: number
+  chatId?: number
+}
+
+export interface ProposedAltSlot {
+  label: string
+  startIso: string
+  endIso: string
+  displayWhen: string
+}
+
+export interface ProposedMeetingInfo {
+  title: string
+  startMs: number
+  endMs: number
+  startIso: string
+  endIso: string
+  displayWhen: string
+  shortWhen: string
+  isFree: boolean
+  conflict: {
+    title: string
+    start: string
+    end: string
+    cardLine: string
+    freeReplyDraft: string | null
+  } | null
+  altSlots: ProposedAltSlot[]
+}
+
+export interface PromiseSuggestion {
+  chatId: number
+  messageId: number
+  contactName: string
+  headerSentTo: string
+  replyText: string
+  promptQuestion: string
+  taskText: string
+  promisedAtTime: string
+  defaultOption: { label: string; remindAt: number }
+  altOptions: Array<{ label: string; remindAt: number }>
+}
+
+export interface NoteItem {
+  id: number
+  text: string
+  meetingEventId: string | null
+  meetingTitle: string | null
+  remindAt: number | null
+  remindTime: string | null
+  taskCompleted: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface NoteDraftAnalysis {
+  transcript: string
+  matchedMeeting: {
+    eventId: string
+    title: string
+    startTime: string
+    label: string
+  } | null
+  taskReminder: {
+    remindAt: number
+    label: string
+  } | null
+}
+
+export interface DigestListItem {
+  id: number
+  channel: string
+  gist: string
+  time: string
+}
+
+export interface DigestPostDetail {
+  id: number
+  channel: string
+  time: string
+  gist: string
+  text: string
 }
 
 export interface InboxItem {
@@ -159,6 +242,8 @@ export interface MessageCard {
   fullText?: string
   hasMore?: boolean
   text: string
+  conflictLine?: string
+  proposedMeeting?: ProposedMeetingInfo
   media?: MessageMedia
   transcript?: string
   drafts: MessageDraft[]
@@ -267,6 +352,191 @@ export async function rescheduleMeeting(
   return parseJson<{ ok: true; newRange: string }>(res)
 }
 
+export async function createCalendarMeeting(
+  bridge: EvenAppBridge,
+  body: { title: string; startIso: string; endIso: string; description?: string },
+): Promise<{ ok: true; eventId: string }> {
+  const res = await apiFetch(bridge, '/api/meetings/create', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  return parseJson<{ ok: true; eventId: string }>(res)
+}
+
+export async function prepareMeetingBriefVoice(
+  bridge: EvenAppBridge,
+  wavBytes: Uint8Array,
+  chatId?: number,
+  prevUserSaid?: string,
+): Promise<{ userSaid: string; aiAdded: string; combinedDescription: string }> {
+  const copy = new Uint8Array(wavBytes.byteLength)
+  copy.set(wavBytes)
+  const blob = new Blob([copy.buffer], { type: 'audio/wav' })
+  const qs = new URLSearchParams()
+  if (chatId) qs.set('chatId', String(chatId))
+  if (prevUserSaid) qs.set('prev', prevUserSaid)
+  const query = qs.toString() ? `?${qs.toString()}` : ''
+  const res = await apiFetch(
+    bridge,
+    `/api/meetings/brief-voice${query}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'audio/wav' },
+      body: blob,
+    },
+    35_000,
+  )
+  return parseJson<{ userSaid: string; aiAdded: string; combinedDescription: string }>(res)
+}
+
+export async function fetchNotes(
+  bridge: EvenAppBridge,
+  meetingEventId?: string,
+): Promise<{ items: NoteItem[] }> {
+  const q = meetingEventId ? `?meetingEventId=${encodeURIComponent(meetingEventId)}` : ''
+  const res = await apiFetch(bridge, `/api/notes${q}`, { method: 'GET' })
+  return parseJson<{ items: NoteItem[] }>(res)
+}
+
+export async function transcribeNoteVoice(
+  bridge: EvenAppBridge,
+  wavBytes: Uint8Array,
+): Promise<NoteDraftAnalysis> {
+  const copy = new Uint8Array(wavBytes.byteLength)
+  copy.set(wavBytes)
+  const blob = new Blob([copy.buffer], { type: 'audio/wav' })
+  const res = await apiFetch(
+    bridge,
+    '/api/notes/transcribe',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'audio/wav' },
+      body: blob,
+    },
+    35_000,
+  )
+  return parseJson<NoteDraftAnalysis>(res)
+}
+
+export async function createNote(
+  bridge: EvenAppBridge,
+  body: {
+    text: string
+    meetingEventId?: string | null
+    meetingTitle?: string | null
+    remindAt?: number | null
+  },
+): Promise<{ note: NoteItem }> {
+  const res = await apiFetch(bridge, '/api/notes', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  return parseJson<{ note: NoteItem }>(res)
+}
+
+export async function updateNote(
+  bridge: EvenAppBridge,
+  id: number,
+  body: {
+    text?: string
+    meetingEventId?: string | null
+    meetingTitle?: string | null
+    remindAt?: number | null
+  },
+): Promise<{ note: NoteItem }> {
+  const res = await apiFetch(bridge, `/api/notes/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+  return parseJson<{ note: NoteItem }>(res)
+}
+
+export async function appendNoteVoice(
+  bridge: EvenAppBridge,
+  id: number,
+  wavBytes: Uint8Array,
+): Promise<{ note: NoteItem }> {
+  const copy = new Uint8Array(wavBytes.byteLength)
+  copy.set(wavBytes)
+  const blob = new Blob([copy.buffer], { type: 'audio/wav' })
+  const res = await apiFetch(
+    bridge,
+    `/api/notes/${id}/append-voice`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'audio/wav' },
+      body: blob,
+    },
+    35_000,
+  )
+  return parseJson<{ note: NoteItem }>(res)
+}
+
+export async function deleteNote(bridge: EvenAppBridge, id: number): Promise<{ ok: true }> {
+  const res = await apiFetch(bridge, `/api/notes/${id}`, { method: 'DELETE' })
+  return parseJson<{ ok: true }>(res)
+}
+
+export async function completeTaskNote(bridge: EvenAppBridge, id: number): Promise<{ ok: true }> {
+  const res = await apiFetch(bridge, `/api/notes/${id}/done`, { method: 'POST' })
+  return parseJson<{ ok: true }>(res)
+}
+
+export async function snoozeTaskNote(bridge: EvenAppBridge, id: number): Promise<{ ok: true }> {
+  const res = await apiFetch(bridge, `/api/notes/${id}/snooze`, { method: 'POST' })
+  return parseJson<{ ok: true }>(res)
+}
+
+export async function createPromiseReminder(
+  bridge: EvenAppBridge,
+  body: {
+    messageId?: number | null
+    chatId: number
+    contactName: string
+    replyText: string
+    taskText: string
+    promisedAtTime: string
+    remindAt: number
+  },
+): Promise<{ ok: true; id: number }> {
+  const res = await apiFetch(bridge, '/api/promises', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  return parseJson<{ ok: true; id: number }>(res)
+}
+
+export async function completePromiseReminder(
+  bridge: EvenAppBridge,
+  id: number,
+): Promise<{ ok: true }> {
+  const res = await apiFetch(bridge, `/api/promises/${id}/done`, { method: 'POST' })
+  return parseJson<{ ok: true }>(res)
+}
+
+export async function snoozePromiseReminder(
+  bridge: EvenAppBridge,
+  id: number,
+): Promise<{ ok: true }> {
+  const res = await apiFetch(bridge, `/api/promises/${id}/snooze`, { method: 'POST' })
+  return parseJson<{ ok: true }>(res)
+}
+
+export async function fetchDigestList(
+  bridge: EvenAppBridge,
+): Promise<{ items: DigestListItem[] }> {
+  const res = await apiFetch(bridge, '/api/digest', { method: 'GET' })
+  return parseJson<{ items: DigestListItem[] }>(res)
+}
+
+export async function fetchDigestPost(
+  bridge: EvenAppBridge,
+  id: number,
+): Promise<DigestPostDetail> {
+  const res = await apiFetch(bridge, `/api/digest/${id}`, { method: 'GET' })
+  return parseJson<DigestPostDetail>(res)
+}
+
 export async function fetchInbox(
   bridge: EvenAppBridge,
   mode?: FeedMode,
@@ -300,16 +570,25 @@ export async function fetchMessageCard(
   return parseJson<MessageCard>(res)
 }
 
+export interface SendReplyResponse {
+  ok: true
+  tgMessageId: number
+  eventCreated?: boolean
+  promiseSuggestion?: PromiseSuggestion
+  suggestCreateMeeting?: boolean
+  proposedMeeting?: ProposedMeetingInfo
+}
+
 export async function sendMessageReply(
   bridge: EvenAppBridge,
   id: number,
   draftIndex: number,
-): Promise<{ ok: true; tgMessageId: number; eventCreated?: boolean }> {
+): Promise<SendReplyResponse> {
   const res = await apiFetch(bridge, `/api/msg/${id}/send`, {
     method: 'POST',
     body: JSON.stringify({ draftIndex }),
   })
-  return parseJson<{ ok: true; tgMessageId: number; eventCreated?: boolean }>(res)
+  return parseJson<SendReplyResponse>(res)
 }
 
 export async function skipMessage(

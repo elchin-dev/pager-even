@@ -14,6 +14,7 @@ import {
   type CalendarSlot,
   type GoogleCalendarClient,
 } from '../lib/google-calendar.js'
+import { fetchPublicChannelPage } from '../lib/digest-service.js'
 import { logger } from '../lib/logger.js'
 import { formatGifText, formatStickerText } from '../lib/media-label.js'
 import {
@@ -21,7 +22,11 @@ import {
   rescheduleMeetingByMinutes,
   sendLateNoticeForMeeting,
 } from '../lib/meetings-service.js'
+import { findRelevantNotes } from '../lib/notes-service.js'
+import { evaluateProposedMeeting } from '../lib/schedule-conflict.js'
+import { getUserSettings } from '../routes/settings.js'
 import { transcodeMediaToWav16k, type TranscodeMediaToWavFn } from '../voice/transcode.js'
+import { registerBotManagement } from './management.js'
 
 const MAX_INCOMING_MEDIA_BYTES = 20 * 1024 * 1024
 const MAX_INCOMING_MEDIA_DURATION_SEC = 5 * 60
@@ -210,6 +215,9 @@ export function createBot(
     calendarClient?: GoogleCalendarClient
     downloadTelegramFile?: (fileId: string) => Promise<Buffer>
     transcodeMediaToWav?: TranscodeMediaToWavFn
+    fetchChannel?: typeof fetchPublicChannelPage
+    sendOwnerAlert?: (tgUserId: number, text: string) => Promise<void>
+    nowProvider?: () => number
   },
 ): Bot {
   const db = options?.db ?? getDb()
@@ -217,7 +225,13 @@ export function createBot(
     options?.getProvider ?? ((userId: number) => getProviderForUser(userId, { db }))
   const calendarClient = options?.calendarClient ?? createDefaultGoogleCalendarClient()
   const transcodeMedia = options?.transcodeMediaToWav ?? transcodeMediaToWav16k
+  const nowFn = options?.nowProvider ?? (() => Date.now())
   const bot = new Bot(token, options?.botConfig)
+  const notifyOwner =
+    options?.sendOwnerAlert ??
+    (async (tgUserId: number, text: string) => {
+      await bot.api.sendMessage(tgUserId, text)
+    })
 
   const downloadFile =
     options?.downloadTelegramFile ??
@@ -348,13 +362,114 @@ export function createBot(
     )
   })
 
-  bot.on('message:text', async (ctx) => {
-    if (ctx.chat.type !== 'private') return
+  async function runEnrichedTriage(params: {
+    ownerId: number
+    ownerTgUserId: number
+    fromDisplayName: string
+    text: string
+    recentMessages: Array<{ fromName: string; text: string; receivedAt: number }>
+    tz: string
+    nowMs: number
+    provider: LlmProvider | null
+  }) {
+    const relevantNotes = findRelevantNotes(db, params.ownerId, params.text, 3)
+    const { result: triage, usedFallback, providerId } = await triageMessage(
+      {
+        fromName: params.fromDisplayName,
+        text: params.text,
+        recentMessages: params.recentMessages,
+        tz: params.tz,
+        nowMs: params.nowMs,
+        relevantNotes,
+      },
+      params.provider,
+    )
+
+    let storedPayload: Record<string, unknown> = { ...triage }
+
+    try {
+      const { connected, events } = await fetchUserUpcomingMeetings({
+        db,
+        userId: params.ownerId,
+        calendarClient,
+        nowMs: params.nowMs,
+        horizonHours: 72,
+      })
+      const proposed = evaluateProposedMeeting({
+        fromName: params.fromDisplayName,
+        text: params.text,
+        events: connected ? events : [],
+        nowMs: params.nowMs,
+        tz: params.tz,
+      })
+
+      if (proposed) {
+        storedPayload = {
+          ...storedPayload,
+          proposedMeeting: proposed,
+        }
+
+        if (!proposed.isFree && proposed.conflict) {
+          const freeDraft = proposed.conflict.freeReplyDraft
+          const updatedDrafts = freeDraft
+            ? [
+                { text: freeDraft, lens: freeDraft, slot: null },
+                ...triage.drafts.filter((d) => d.lens.toLowerCase() !== freeDraft.toLowerCase()),
+              ].slice(0, 4)
+            : triage.drafts
+
+          storedPayload = {
+            ...storedPayload,
+            priority: 'urgent',
+            intent: 'schedule',
+            drafts: updatedDrafts,
+            conflict: proposed.conflict,
+          }
+
+          const userCfg = getUserSettings(db, params.ownerId)
+          if (userCfg.conflictAlerts) {
+            try {
+              await notifyOwner(
+                params.ownerTgUserId,
+                `⚠ Ты занят. ${params.fromDisplayName} предлагает встречу ${proposed.shortWhen} — у тебя ${proposed.conflict.title} ${proposed.conflict.start}–${proposed.conflict.end}`,
+              )
+            } catch {
+              logger.warn('conflict_owner_alert_failed', { userId: params.ownerId })
+            }
+          }
+        }
+      }
+    } catch {
+      // Keep base triage if calendar lookup fails
+    }
+
+    return { triage, storedPayload, usedFallback, providerId }
+  }
+
+  bot.on('message:text', async (ctx, next) => {
+    if (ctx.chat.type !== 'private') {
+      await next()
+      return
+    }
     const text = ctx.message.text.trim()
-    if (!/^\d{6}$/.test(text)) return
+    if (!/^\d{6}$/.test(text)) {
+      await next()
+      return
+    }
 
     const botUsername = await resolveBotUsername(ctx)
     await claimPairCode(db, ctx, text, botUsername)
+  })
+
+  registerBotManagement({
+    bot,
+    db,
+    calendarClient,
+    resolveProvider,
+    downloadFile,
+    transcodeMedia,
+    resolvePublicBaseUrl,
+    fetchChannel: options?.fetchChannel,
   })
 
   bot.on('callback_query:data', async (ctx) => {
@@ -488,7 +603,7 @@ export function createBot(
       return
     }
 
-    const now = Date.now()
+    const now = nowFn()
     const receivedAt = msg.date ? msg.date * 1000 : now
     const expiresAt = now + MESSAGE_TTL_MS
     const fromDisplayName = formatDisplayName(msg.from)
@@ -626,22 +741,22 @@ export function createBot(
             .all()
             .reverse()
 
-          const { result: triage, usedFallback, providerId } = await triageMessage(
-            {
-              fromName: fromDisplayName,
-              text: cleanedTranscript,
-              recentMessages: recentRows.filter((_, idx) => idx < recentRows.length - 1),
-              tz: ownerTz,
-              nowMs: Date.now(),
-            },
+          const { triage, storedPayload, usedFallback, providerId } = await runEnrichedTriage({
+            ownerId,
+            ownerTgUserId: owner.tgUserId,
+            fromDisplayName,
+            text: cleanedTranscript,
+            recentMessages: recentRows.filter((_, idx) => idx < recentRows.length - 1),
+            tz: ownerTz,
+            nowMs: nowFn(),
             provider,
-          )
+          })
 
           db.update(messages)
             .set({
               text: cleanedTranscript,
               mediaJson: JSON.stringify(transcribedMedia),
-              aiJson: JSON.stringify(triage),
+              aiJson: JSON.stringify(storedPayload),
             })
             .where(eq(messages.id, insertedId))
             .run()
@@ -790,19 +905,19 @@ export function createBot(
 
       const userTz = resolveUserTimeZone(owner.tz)
 
-      const { result: triage, usedFallback, providerId } = await triageMessage(
-        {
-          fromName: fromDisplayName,
-          text: messageText,
-          recentMessages: recentRows.slice(0, -1),
-          tz: userTz,
-          nowMs: now,
-        },
+      const { triage, storedPayload, usedFallback, providerId } = await runEnrichedTriage({
+        ownerId: owner.id,
+        ownerTgUserId: owner.tgUserId,
+        fromDisplayName,
+        text: messageText,
+        recentMessages: recentRows.slice(0, -1),
+        tz: userTz,
+        nowMs: now,
         provider,
-      )
+      })
 
       db.update(messages)
-        .set({ aiJson: JSON.stringify(triage) })
+        .set({ aiJson: JSON.stringify(storedPayload) })
         .where(eq(messages.id, insertedId))
         .run()
 

@@ -32,6 +32,15 @@ export const userSettings = sqliteTable('user_settings', {
   conflictAlerts: integer('conflict_alerts', { mode: 'boolean' })
     .notNull()
     .default(true),
+  meetingReminders: integer('meeting_reminders', { mode: 'boolean' })
+    .notNull()
+    .default(true),
+  briefAlerts: integer('brief_alerts', { mode: 'boolean' })
+    .notNull()
+    .default(true),
+  taskReminders: integer('task_reminders', { mode: 'boolean' })
+    .notNull()
+    .default(true),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 })
@@ -149,5 +158,91 @@ export const sentReminders = sqliteTable(
       table.kind,
       table.sourceKey,
     ),
+  ],
+)
+
+export const notes = sqliteTable(
+  'notes',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    text: text('text').notNull(),
+    meetingEventId: text('meeting_event_id'),
+    meetingTitle: text('meeting_title'),
+    remindAt: integer('remind_at'),
+    taskCompletedAt: integer('task_completed_at'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    index('notes_user_updated_idx').on(table.userId, table.updatedAt),
+    index('notes_remind_at_idx').on(table.remindAt),
+  ],
+)
+
+export const promises = sqliteTable(
+  'promises',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    messageId: integer('message_id').references(() => messages.id, { onDelete: 'set null' }),
+    chatId: integer('chat_id').notNull(),
+    contactName: text('contact_name').notNull(),
+    replyText: text('reply_text').notNull(),
+    taskText: text('task_text').notNull(),
+    promisedAtTime: text('promised_at_time').notNull(),
+    remindAt: integer('remind_at').notNull(),
+    completedAt: integer('completed_at'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [index('promises_user_remind_idx').on(table.userId, table.remindAt)],
+)
+
+export const channels = sqliteTable(
+  'channels',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    username: text('username').notNull(),
+    title: text('title').notNull(),
+    lastCheckedAt: integer('last_checked_at'),
+    lastPostId: integer('last_post_id'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [uniqueIndex('channels_user_username_uidx').on(table.userId, table.username)],
+)
+
+export const digestPosts = sqliteTable(
+  'digest_posts',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    channelId: integer('channel_id')
+      .notNull()
+      .references(() => channels.id, { onDelete: 'cascade' }),
+    channelTitle: text('channel_title').notNull(),
+    channelUsername: text('channel_username').notNull(),
+    postId: integer('post_id').notNull(),
+    text: text('text').notNull(),
+    gist: text('gist').notNull(),
+    publishedAt: integer('published_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('digest_posts_user_chan_post_uidx').on(
+      table.userId,
+      table.channelUsername,
+      table.postId,
+    ),
+    index('digest_posts_user_pub_idx').on(table.userId, table.publishedAt),
+    index('digest_posts_expires_idx').on(table.expiresAt),
   ],
 )

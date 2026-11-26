@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { triageResultSchema } from '../ai/triage.js'
 import { getDb, type AppDb } from '../db/index.js'
-import { googleAccounts, messages, users } from '../db/schema.js'
+import { googleAccounts, channels, digestPosts, messages, users } from '../db/schema.js'
 import { decryptSecret } from '../lib/crypto.js'
 import {
   createDefaultGoogleCalendarClient,
@@ -291,6 +291,20 @@ export function createHomeRouter(options?: {
       meetingsToday: todayEvents.length,
     })
 
+    const userChannels = db
+      .select({ id: channels.id })
+      .from(channels)
+      .where(eq(channels.userId, authUser.id))
+      .all()
+    const activeDigestPosts =
+      userChannels.length > 0
+        ? db
+            .select({ id: digestPosts.id })
+            .from(digestPosts)
+            .where(and(eq(digestPosts.userId, authUser.id), gt(digestPosts.expiresAt, now)))
+            .all()
+        : []
+
     const response: HomeResponse = {
       nowTime,
       headerMeeting,
@@ -306,8 +320,8 @@ export function createHomeRouter(options?: {
         items: meetingItems,
       },
       digest: {
-        enabled: false,
-        count: 0,
+        enabled: userChannels.length > 0,
+        count: activeDigestPosts.length,
       },
     }
 

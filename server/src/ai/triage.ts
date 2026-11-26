@@ -67,6 +67,7 @@ export interface TriageInput {
   tz: string
   nowMs?: number
   freeSlots?: CalendarSlot[]
+  relevantNotes?: Array<{ id: number; text: string }>
 }
 
 const TRIAGE_SYSTEM_PROMPT = `You are Pager, an AI triage assistant for smart glasses (Even Realities G2).
@@ -102,6 +103,7 @@ Rules:
       3) Optional short clarifying question or defer (e.g. "А что там?", "Напишу позже")
     - Complex request, scheduling, or multi-choice situation: up to 4 replies.
   - Every reply MUST differ in meaning/action (not just rewording the same idea). Avoid generic filler unless truly appropriate.
+  - If "Relevant user notes" are provided and answer the sender's question (e.g. prices, rates, addresses, details), use those exact facts/numbers directly in the reply (e.g. "Сайт под ключ - от 800$").
   - CRITICAL: Every draft's "text" MUST be concise (<= 32 characters) AND "lens" MUST be 100% IDENTICAL to "text" (exact same characters, no shortening or rephrasing, same original language/script — keep Russian in Cyrillic, English in English). The exact text shown on the glasses will be sent verbatim.
   - Always set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
@@ -259,12 +261,17 @@ export function buildTriageUserPrompt(input: TriageInput): string {
   const slotLines = (input.freeSlots ?? [])
     .map((s) => `- ${s.label} (${s.startIso})`)
     .join('\n')
+  const noteLines = (input.relevantNotes ?? [])
+    .slice(0, 3)
+    .map((n) => `- ${n.text.slice(0, 240)}`)
+    .join('\n')
 
   return [
     `Current UTC time: ${nowIso}`,
     `User timezone: ${input.tz}`,
     `Sender: ${input.fromName}`,
     slotLines ? `Available calendar slots:\n${slotLines}` : '',
+    noteLines ? `Relevant user notes:\n${noteLines}` : '',
     historyLines ? `Recent chat messages:\n${historyLines}` : '',
     `Latest incoming message:\n${input.text || '[media]'}`,
   ]

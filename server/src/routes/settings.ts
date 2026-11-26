@@ -13,6 +13,9 @@ export interface UserSettingsDto {
   chatView: ChatView
   voiceEnabled: boolean
   conflictAlerts: boolean
+  meetingReminders: boolean
+  briefAlerts: boolean
+  taskReminders: boolean
 }
 
 const DEFAULT_SETTINGS: UserSettingsDto = {
@@ -20,6 +23,9 @@ const DEFAULT_SETTINGS: UserSettingsDto = {
   chatView: 'new_only',
   voiceEnabled: true,
   conflictAlerts: true,
+  meetingReminders: true,
+  briefAlerts: true,
+  taskReminders: true,
 }
 
 const updateSettingsSchema = z.object({
@@ -27,6 +33,9 @@ const updateSettingsSchema = z.object({
   chatView: z.enum(['new_only', 'with_history']).optional(),
   voiceEnabled: z.boolean().optional(),
   conflictAlerts: z.boolean().optional(),
+  meetingReminders: z.boolean().optional(),
+  briefAlerts: z.boolean().optional(),
+  taskReminders: z.boolean().optional(),
 })
 
 export function getUserSettings(db: AppDb, userId: number): UserSettingsDto {
@@ -45,7 +54,58 @@ export function getUserSettings(db: AppDb, userId: number): UserSettingsDto {
     chatView: row.chatView,
     voiceEnabled: row.voiceEnabled,
     conflictAlerts: row.conflictAlerts,
+    meetingReminders: row.meetingReminders ?? true,
+    briefAlerts: row.briefAlerts ?? true,
+    taskReminders: row.taskReminders ?? true,
   }
+}
+
+export function patchUserSettings(
+  db: AppDb,
+  userId: number,
+  patch: Partial<UserSettingsDto>,
+): UserSettingsDto {
+  const current = getUserSettings(db, userId)
+  const next: UserSettingsDto = {
+    feedMode: patch.feedMode ?? current.feedMode,
+    chatView: patch.chatView ?? current.chatView,
+    voiceEnabled: patch.voiceEnabled ?? current.voiceEnabled,
+    conflictAlerts: patch.conflictAlerts ?? current.conflictAlerts,
+    meetingReminders: patch.meetingReminders ?? current.meetingReminders,
+    briefAlerts: patch.briefAlerts ?? current.briefAlerts,
+    taskReminders: patch.taskReminders ?? current.taskReminders,
+  }
+  const now = Date.now()
+
+  db.insert(userSettings)
+    .values({
+      userId,
+      feedMode: next.feedMode,
+      chatView: next.chatView,
+      voiceEnabled: next.voiceEnabled,
+      conflictAlerts: next.conflictAlerts,
+      meetingReminders: next.meetingReminders,
+      briefAlerts: next.briefAlerts,
+      taskReminders: next.taskReminders,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: userSettings.userId,
+      set: {
+        feedMode: next.feedMode,
+        chatView: next.chatView,
+        voiceEnabled: next.voiceEnabled,
+        conflictAlerts: next.conflictAlerts,
+        meetingReminders: next.meetingReminders,
+        briefAlerts: next.briefAlerts,
+        taskReminders: next.taskReminders,
+        updatedAt: now,
+      },
+    })
+    .run()
+
+  return next
 }
 
 export function createSettingsRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
@@ -72,38 +132,7 @@ export function createSettingsRouter(options?: { db?: AppDb }): Hono<AuthEnv> {
 
     const authUser = c.get('authUser')
     const db = options?.db ?? getDb()
-    const current = getUserSettings(db, authUser.id)
-    const next: UserSettingsDto = {
-      feedMode: parsed.data.feedMode ?? current.feedMode,
-      chatView: parsed.data.chatView ?? current.chatView,
-      voiceEnabled: parsed.data.voiceEnabled ?? current.voiceEnabled,
-      conflictAlerts: parsed.data.conflictAlerts ?? current.conflictAlerts,
-    }
-    const now = Date.now()
-
-    db.insert(userSettings)
-      .values({
-        userId: authUser.id,
-        feedMode: next.feedMode,
-        chatView: next.chatView,
-        voiceEnabled: next.voiceEnabled,
-        conflictAlerts: next.conflictAlerts,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: userSettings.userId,
-        set: {
-          feedMode: next.feedMode,
-          chatView: next.chatView,
-          voiceEnabled: next.voiceEnabled,
-          conflictAlerts: next.conflictAlerts,
-          updatedAt: now,
-        },
-      })
-      .run()
-
-    return c.json(next)
+    return c.json(patchUserSettings(db, authUser.id, parsed.data))
   })
 
   return router

@@ -3,8 +3,10 @@ import { Api } from 'grammy'
 import { z } from 'zod'
 import { getProviderForUser, type LlmProvider } from '../ai/provider.js'
 import type { AppDb } from '../db/index.js'
-import { googleAccounts, messages, users } from '../db/schema.js'
+import { googleAccounts, messages, notes, users } from '../db/schema.js'
 import { decryptSecret } from './crypto.js'
+import { runChannelsDigestTick } from './digest-service.js'
+import { getUserSettings } from '../routes/settings.js'
 import {
   createDefaultGoogleCalendarClient,
   hasCalendarWriteScope,
@@ -185,6 +187,15 @@ export async function generateMeetingBriefSummary(params: {
   const now = params.nowMs ?? Date.now()
   const eventDescription = params.event.description?.trim() ?? ''
 
+  const attachedNotes = params.db
+    .select({ text: notes.text })
+    .from(notes)
+    .where(and(eq(notes.userId, params.userId), eq(notes.meetingEventId, params.event.id)))
+    .orderBy(desc(notes.updatedAt), desc(notes.id))
+    .limit(5)
+    .all()
+  const noteSnippets = attachedNotes.map((n) => n.text.slice(0, 160)).filter(Boolean)
+
   const chatSnippets: string[] = []
   for (const match of params.matchedChats.slice(0, 3)) {
     const rows = params.db
@@ -213,13 +224,15 @@ export async function generateMeetingBriefSummary(params: {
     }
   }
 
-  if (!eventDescription && chatSnippets.length === 0) {
+  if (!eventDescription && noteSnippets.length === 0 && chatSnippets.length === 0) {
     return 'Без описания'
   }
 
   const fallbackText = eventDescription
     ? toOriginalLens(eventDescription, 110)
-    : toOriginalLens(chatSnippets[chatSnippets.length - 1] ?? 'Без описания', 110)
+    : noteSnippets[0]
+      ? toOriginalLens(noteSnippets[0], 110)
+      : toOriginalLens(chatSnippets[chatSnippets.length - 1] ?? 'Без описания', 110)
 
   const provider =
     params.provider !== undefined
@@ -233,11 +246,12 @@ export async function generateMeetingBriefSummary(params: {
   try {
     const res = await provider.completeJson({
       system: `You summarize a calendar meeting brief for smart glasses in 1-2 very short lines (<= 110 chars total) in Russian (keep original names/terms).
-Combine the event description and recent Telegram chat context with attendees (if provided).
+Combine the event description, attached notes, and recent Telegram chat context with attendees (if provided).
 Output ONLY raw JSON: {"summary": string}. No markdown, no quotes around the summary.`,
       user: [
         `Event title: ${params.event.summary}`,
         eventDescription ? `Description: ${eventDescription.slice(0, 400)}` : '',
+        noteSnippets.length > 0 ? `Attached notes:\n${noteSnippets.join('\n')}` : '',
         chatSnippets.length > 0 ? `Recent Telegram messages:\n${chatSnippets.join('\n')}` : '',
       ]
         .filter(Boolean)
@@ -408,6 +422,9 @@ export async function runMeetingReminderTick(options: {
 
   for (const acc of accounts) {
     try {
+      const userCfg = getUserSettings(options.db, acc.userId)
+      if (!userCfg.meetingReminders) continue
+
       const { events, tz } = await fetchUserUpcomingMeetings({
         db: options.db,
         userId: acc.userId,
@@ -433,20 +450,36 @@ export async function runMeetingReminderTick(options: {
 
         const matchedChats = matchAttendeesToTelegramChats(options.db, acc.userId, ev.attendees)
         const provider = options.getProvider ? options.getProvider(acc.userId) : undefined
-        const summary = await generateMeetingBriefSummary({
-          db: options.db,
-          userId: acc.userId,
-          event: ev,
-          matchedChats,
-          provider,
-          nowMs: now,
-        })
+        const summary = userCfg.briefAlerts
+          ? await generateMeetingBriefSummary({
+              db: options.db,
+              userId: acc.userId,
+              event: ev,
+              matchedChats,
+              provider,
+              nowMs: now,
+            })
+          : ''
+
+        const attachedNotes = userCfg.briefAlerts
+          ? options.db
+              .select({ text: notes.text })
+              .from(notes)
+              .where(and(eq(notes.userId, acc.userId), eq(notes.meetingEventId, ev.id)))
+              .limit(3)
+              .all()
+          : []
+        const notesLine =
+          attachedNotes.length > 0
+            ? `Заметки (${attachedNotes.length}): ${attachedNotes.map((n) => toOriginalLens(n.text, 50)).join(' · ')}`
+            : ''
 
         const attendeePart = attendeeNames.length > 0 ? ` · ${attendeeNames.join(', ')}` : ''
         const titleClean = toOriginalLens(ev.summary, 48) || 'Встреча'
         const telegramLines = [
           `Через ${minsLeft} мин: ${titleClean} · ${startHHMM}-${endHHMM}${attendeePart}`,
           summary && summary !== 'Без описания' ? summary : '',
+          notesLine,
         ].filter(Boolean)
 
         const sent = await dispatchReminderOnce({
@@ -499,6 +532,10 @@ export function startMeetingReminderScheduler(options: {
       db: options.db,
       calendarClient: options.calendarClient,
     })
+    void import('./notes-service.js').then(({ runTaskAndPromiseReminderTick }) =>
+      runTaskAndPromiseReminderTick({ db: options.db }),
+    )
+    void runChannelsDigestTick({ db: options.db })
   }, intervalMs)
   timer.unref?.()
   return () => clearInterval(timer)

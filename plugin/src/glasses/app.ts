@@ -14,30 +14,52 @@ import {
 } from '@evenrealities/even_hub_sdk'
 import {
   UnauthorizedError,
+  appendNoteVoice,
   clearDeviceToken,
+  completePromiseReminder,
+  completeTaskNote,
+  createCalendarMeeting,
+  createNote,
+  createPromiseReminder,
+  deleteNote,
+  fetchDigestList,
+  fetchDigestPost,
   fetchHome,
   fetchInbox,
   fetchMeetingBrief,
   fetchMeetings,
   fetchMessageCard,
+  fetchNotes,
   getPairingStatus,
   getStoredDeviceToken,
+  prepareMeetingBriefVoice,
   rescheduleMeeting,
   saveDeviceToken,
   sendMeetingLate,
   sendMessageReply,
   sendVoiceReply,
   skipMessage,
+  snoozePromiseReminder,
+  snoozeTaskNote,
   startPairing,
   subscribeInboxStream,
+  transcribeNoteVoice,
+  updateNote,
+  type DigestListItem,
+  type DigestPostDetail,
   type FeedMode,
   type GlassesReminderEvent,
   type HomeResponse,
   type InboxCounts,
   type InboxItem,
   type MeetingBrief,
+  type MeetingListItem,
   type MeetingsListResponse,
   type MessageCard,
+  type NoteDraftAnalysis,
+  type NoteItem,
+  type PromiseSuggestion,
+  type ProposedMeetingInfo,
 } from '../lib/api'
 import {
   VOICE_CONFIG,
@@ -145,8 +167,20 @@ type AppScreen =
   | 'meetings'
   | 'meeting-card'
   | 'meeting-action-undo'
+  | 'new-meeting'
+  | 'new-meeting-slots'
+  | 'meeting-brief-review'
+  | 'calendar-create-undo'
+  | 'notes-list'
+  | 'note-review'
+  | 'note-detail'
+  | 'note-bind-meeting'
+  | 'note-delete-undo'
+  | 'promise-confirm'
+  | 'promise-alt-time'
+  | 'digest-list'
+  | 'digest-post'
   | 'reminder-overlay'
-  | 'coming-soon'
   | 'inbox'
   | 'inbox-error'
   | 'card'
@@ -508,10 +542,13 @@ function buildMeetingsPayload(
   }
 }
 
-type MeetingBriefAction = 'late' | 'reschedule'
+type MeetingBriefAction = 'notes' | 'late' | 'reschedule'
 
 function getMeetingBriefActions(brief: MeetingBrief): Array<{ action: MeetingBriefAction; label: string }> {
   const actions: Array<{ action: MeetingBriefAction; label: string }> = []
+  if (brief.notesCount > 0) {
+    actions.push({ action: 'notes', label: clampUtf8(`Заметки (${brief.notesCount})`, 63) })
+  }
   if (brief.canSendLate) {
     actions.push({ action: 'late', label: clampUtf8('Опаздываю на 5 мин', 63) })
   }
@@ -583,6 +620,16 @@ function buildMeetingCardPayload(brief: MeetingBrief): {
   }
 }
 
+function getReminderActions(reminder: GlassesReminderEvent): string[] {
+  if (reminder.kind === 'task') {
+    return ['Готово', '+1 час']
+  }
+  if (reminder.kind === 'promise') {
+    return ['Готово', 'Открыть чат', '+1 час']
+  }
+  return ['Открыть бриф', 'Позже']
+}
+
 function buildReminderOverlayPayload(reminder: GlassesReminderEvent): {
   containerTotalNum: number
   textObject: TextContainerProperty[]
@@ -615,6 +662,7 @@ function buildReminderOverlayPayload(reminder: GlassesReminderEvent): {
     content: `${reminder.title}\n${reminder.subtitle}`,
     isEventCapture: 0,
   })
+  const items = getReminderActions(reminder)
   const list = new ListContainerProperty({
     xPosition: 0,
     yPosition: 156,
@@ -627,10 +675,10 @@ function buildReminderOverlayPayload(reminder: GlassesReminderEvent): {
     containerName: REMINDER_LIST_NAME,
     isEventCapture: 1,
     itemContainer: new ListItemContainerProperty({
-      itemCount: 2,
+      itemCount: items.length,
       itemWidth: 560,
       isItemSelectBorderEn: 1,
-      itemName: ['Открыть бриф', 'Позже'],
+      itemName: items,
     }),
   })
   return {
@@ -641,48 +689,144 @@ function buildReminderOverlayPayload(reminder: GlassesReminderEvent): {
   }
 }
 
-function buildComingSoonPayload(title: string): {
+function buildGenericThreePartPayload(params: {
+  headerText: string
+  bodyText: string
+  items: string[]
+  includeVoice?: boolean
+}): {
   containerTotalNum: number
   textObject: TextContainerProperty[]
+  listObject: ListContainerProperty[]
   menuObject: MenuContainerProperty
 } {
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 40,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: SOON_HEADER_ID,
+    containerName: SOON_HEADER_NAME,
+    content: clampUtf8(params.headerText, 63),
+    isEventCapture: 0,
+  })
+  const body = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 42,
+    width: 576,
+    height: 108,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: SOON_BODY_ID,
+    containerName: SOON_BODY_NAME,
+    content: params.bodyText,
+    isEventCapture: 0,
+  })
+  const clampedItems = params.items.map((it) => clampUtf8(it, 63))
+  const list = new ListContainerProperty({
+    xPosition: 0,
+    yPosition: 152,
+    width: 576,
+    height: 136,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: REMINDER_LIST_ID,
+    containerName: REMINDER_LIST_NAME,
+    isEventCapture: 1,
+    itemContainer: new ListItemContainerProperty({
+      itemCount: clampedItems.length,
+      itemWidth: 560,
+      isItemSelectBorderEn: 1,
+      itemName: clampedItems,
+    }),
+  })
+  return {
+    containerTotalNum: 3,
+    textObject: [header, body],
+    listObject: [list],
+    menuObject: buildMenuObject(Boolean(params.includeVoice)),
+  }
+}
+
+function buildGenericListPagePayload(params: {
+  headerText: string
+  items: string[]
+  emptyText: string
+}): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  listObject?: ListContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 44,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: SOON_HEADER_ID,
+    containerName: SOON_HEADER_NAME,
+    content: clampUtf8(params.headerText, 63),
+    isEventCapture: 0,
+  })
+  if (params.items.length === 0) {
+    const empty = new TextContainerProperty({
+      xPosition: 0,
+      yPosition: 46,
+      width: 576,
+      height: 242,
+      borderWidth: 0,
+      borderColor: 5,
+      paddingLength: 4,
+      containerID: SOON_BODY_ID,
+      containerName: SOON_BODY_NAME,
+      content: params.emptyText,
+      isEventCapture: 1,
+    })
+    return {
+      containerTotalNum: 2,
+      textObject: [header, empty],
+      menuObject: buildMenuObject(false),
+    }
+  }
+  const clamped = params.items.map((it) => clampUtf8(it, 63))
+  const list = new ListContainerProperty({
+    xPosition: 0,
+    yPosition: 46,
+    width: 576,
+    height: 242,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: REMINDER_LIST_ID,
+    containerName: REMINDER_LIST_NAME,
+    isEventCapture: 1,
+    itemContainer: new ListItemContainerProperty({
+      itemCount: clamped.length,
+      itemWidth: 560,
+      isItemSelectBorderEn: 1,
+      itemName: clamped,
+    }),
+  })
   return {
     containerTotalNum: 2,
-    textObject: [
-      new TextContainerProperty({
-        xPosition: 0,
-        yPosition: 0,
-        width: 576,
-        height: 44,
-        borderWidth: 0,
-        borderColor: 5,
-        paddingLength: 4,
-        containerID: SOON_HEADER_ID,
-        containerName: SOON_HEADER_NAME,
-        content: title,
-        isEventCapture: 0,
-      }),
-      new TextContainerProperty({
-        xPosition: 0,
-        yPosition: 46,
-        width: 576,
-        height: 242,
-        borderWidth: 0,
-        borderColor: 5,
-        paddingLength: 4,
-        containerID: SOON_BODY_ID,
-        containerName: SOON_BODY_NAME,
-        content: 'Скоро\n\n2x тап — назад',
-        isEventCapture: 1,
-      }),
-    ],
+    textObject: [header],
+    listObject: [list],
     menuObject: buildMenuObject(false),
   }
 }
 
 function formatInboxListLine(item: InboxItem): string {
   const isUrgent = Boolean(item.urgent || item.priority === 'urgent')
-  const raw = `${item.from}  ${item.preview}`
+  const conflictPrefix = item.hasConflict ? '!! ' : ''
+  const raw = `${conflictPrefix}${item.from}  ${item.preview}`
   if (isUrgent) {
     const trimmed = clampVisualAndUtf8(raw, 56, 56)
     const targetUnits = 62
@@ -898,6 +1042,9 @@ function buildCardPayload(card: MessageCard): {
     isEventCapture: 0,
   })
 
+  const gistContent = card.conflictLine
+    ? `${card.conflictLine}\n${card.gist}`
+    : card.gist
   const gist = new TextContainerProperty({
     xPosition: 0,
     yPosition: 44,
@@ -908,11 +1055,14 @@ function buildCardPayload(card: MessageCard): {
     paddingLength: 4,
     containerID: CARD_GIST_ID,
     containerName: CARD_GIST_NAME,
-    content: card.gist,
+    content: gistContent,
     isEventCapture: 0,
   })
 
   const draftItems = card.drafts.slice(0, 4).map((draft) => clampUtf8(draft.lens, 63))
+  if (card.proposedMeeting) {
+    draftItems.push('Создать встречу')
+  }
   draftItems.push('Пропустить')
   const drafts = new ListContainerProperty({
     xPosition: 0,
@@ -1140,7 +1290,6 @@ export async function startGlassesApp(): Promise<void> {
   let activeReminder: GlassesReminderEvent | null = null
   let reminderSelectedIndex = 0
   let preReminderScreen: AppScreen = 'home'
-  let preSoonScreen: AppScreen = 'home'
 
   let inboxItems: InboxItem[] = []
   let feedMode: FeedMode = 'urgent'
@@ -1161,7 +1310,8 @@ export async function startGlassesApp(): Promise<void> {
   let sendCancelled = false
   let isActionInFlight = false
 
-  let preVoiceScreen: 'card' | 'card-full' | 'transcript-pages' = 'card'
+  let preVoiceScreen: AppScreen = 'card'
+  let recordingPurpose: 'chat-voice' | 'new-note' | 'append-note' | 'meeting-brief' = 'chat-voice'
   let recordingMode: 'hold' | 'menu' = 'hold'
   let isRecordingActive = false
   let holdReleasedEarly = false
@@ -1171,6 +1321,35 @@ export async function startGlassesApp(): Promise<void> {
   let pcmChunks: Uint8Array[] = []
   let pendingWav: { wavBytes: Uint8Array; durationSec: number } | null = null
   let voiceConfirmIndex = 0
+
+  // Notes, Promises, New Meeting & Digest state
+  let notesList: NoteItem[] = []
+  let notesFilterMeetingId: string | undefined
+  let noteSelectedIndex = 0
+  let activeNote: NoteItem | null = null
+  let noteDetailActionIndex = 0
+  let noteDraftAnalysis: NoteDraftAnalysis | null = null
+  let noteDraftBindMeeting: { eventId: string; label: string } | null = null
+  let noteReviewActionIndex = 0
+  let bindMeetingChoices: Array<{ eventId: string | null; title: string | null; label: string }> = []
+  let bindMeetingIndex = 0
+  let preNotesScreen: AppScreen = 'home'
+
+  let activePromiseSuggestion: PromiseSuggestion | null = null
+  let promiseActionIndex = 0
+
+  let activeProposedMeeting: ProposedMeetingInfo | null = null
+  let proposedMeetingChatId: number | undefined
+  let newMeetingActionIndex = 0
+  let newMeetingSlotIndex = 0
+  let preparedBrief: { userSaid: string; aiAdded: string; combinedDescription: string } | null = null
+  let briefReviewActionIndex = 0
+
+  let digestItems: DigestListItem[] = []
+  let digestSelectedIndex = 0
+  let activeDigestPost: DigestPostDetail | null = null
+  let digestPages: string[] = []
+  let digestPageIndex = 0
 
   function stopPolling(): void {
     activePairRunId += 1
@@ -1519,6 +1698,10 @@ export async function startGlassesApp(): Promise<void> {
     action: MeetingBriefAction,
   ): Promise<void> {
     if (disposed || isActionInFlight) return
+    if (action === 'notes') {
+      await openNotesList(eventId)
+      return
+    }
     isActionInFlight = true
     try {
       if (action === 'late') {
@@ -1672,39 +1855,482 @@ export async function startGlassesApp(): Promise<void> {
     }
   }
 
-  async function openComingSoon(title: string): Promise<void> {
+  async function openNotesList(meetingEventId?: string): Promise<void> {
     if (disposed) return
-    if (screen !== 'coming-soon') {
-      preSoonScreen = screen
+    stopSendTimer()
+    if (
+      screen !== 'notes-list' &&
+      screen !== 'note-detail' &&
+      screen !== 'note-review' &&
+      screen !== 'note-bind-meeting' &&
+      screen !== 'note-delete-undo'
+    ) {
+      preNotesScreen = screen
     }
-    screen = 'coming-soon'
-    await bridge.rebuildPageContainer(
-      new RebuildPageContainer(buildComingSoonPayload(title)),
-    )
+    notesFilterMeetingId = meetingEventId
+    noteSelectedIndex = 0
+    screen = 'notes-list'
+    try {
+      const res = await fetchNotes(bridge, meetingEventId)
+      if (disposed || screen !== 'notes-list') return
+      notesList = res.items
+      const headerText = meetingEventId
+        ? `Заметки встречи (${notesList.length})`
+        : `Мои заметки (${notesList.length})`
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(
+          buildGenericListPagePayload({
+            headerText,
+            items: notesList.map((n) => {
+              const prefix = n.remindTime && !n.taskCompleted ? `[${n.remindTime}] ` : ''
+              return `${prefix}${n.text}`
+            }),
+            emptyText: 'Заметок пока нет\n\nМеню -> Новая заметка\n2x тап — назад',
+          }),
+        ),
+      )
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(
+            buildGenericListPagePayload({
+              headerText: 'Мои заметки',
+              items: [],
+              emptyText: 'Ошибка загрузки\n\n2x тап — назад',
+            }),
+          ),
+        )
+      }
+    }
   }
 
-  async function returnFromComingSoon(): Promise<void> {
-    if (disposed) return
-    if (preSoonScreen === 'inbox' || preSoonScreen === 'inbox-error') {
+  async function returnFromNotes(): Promise<void> {
+    if (preNotesScreen === 'meeting-card' && activeMeetingBrief) {
+      await openMeetingBriefById(activeMeetingBrief.id)
+    } else if (preNotesScreen === 'inbox') {
       await returnToInbox()
-    } else if (preSoonScreen === 'meetings') {
+    } else if (preNotesScreen === 'meetings') {
       await openMeetingsFromHome()
     } else if (
-      (preSoonScreen === 'card' ||
-        preSoonScreen === 'card-full' ||
-        preSoonScreen === 'transcript-pages') &&
+      (preNotesScreen === 'card' ||
+        preNotesScreen === 'card-full' ||
+        preNotesScreen === 'transcript-pages') &&
       activeCard
     ) {
-      if (preSoonScreen === 'transcript-pages') {
-        await openTranscriptPages()
-      } else if (preSoonScreen === 'card-full') {
-        await openCardFull()
-      } else {
-        await backFromCardFull()
-      }
+      await backFromCardFull()
     } else {
       await returnToHome()
     }
+  }
+
+  function getNoteReviewActions(): Array<{ id: string; label: string }> {
+    if (!noteDraftAnalysis) return []
+    const items: Array<{ id: string; label: string }> = []
+    if (noteDraftAnalysis.taskReminder) {
+      items.push({ id: 'save_rem', label: 'Сохранить с напоминанием' })
+      items.push({ id: 'save_no_rem', label: 'Без напоминания' })
+    } else {
+      items.push({ id: 'save_no_rem', label: 'Сохранить' })
+    }
+    if (noteDraftAnalysis.matchedMeeting && !noteDraftBindMeeting) {
+      items.push({
+        id: 'bind_matched',
+        label: `Привязать: ${noteDraftAnalysis.matchedMeeting.label}`,
+      })
+    }
+    items.push({ id: 'rerecord', label: 'Записать заново' })
+    items.push({ id: 'discard', label: 'Удалить' })
+    return items
+  }
+
+  async function renderNoteReviewScreen(): Promise<void> {
+    if (disposed || !noteDraftAnalysis) return
+    screen = 'note-review'
+    noteReviewActionIndex = 0
+    const lines = [noteDraftAnalysis.transcript]
+    if (noteDraftAnalysis.taskReminder) {
+      lines.push(`Напоминание: ${noteDraftAnalysis.taskReminder.label}`)
+    }
+    if (noteDraftBindMeeting) {
+      lines.push(`Встреча: ${noteDraftBindMeeting.label}`)
+    }
+    const actions = getNoteReviewActions()
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildGenericThreePartPayload({
+          headerText: 'Новая заметка',
+          bodyText: lines.join('\n'),
+          items: actions.map((a) => a.label),
+        }),
+      ),
+    )
+  }
+
+  async function openNoteDetail(note: NoteItem): Promise<void> {
+    if (disposed) return
+    activeNote = note
+    noteDetailActionIndex = 0
+    screen = 'note-detail'
+    const meta: string[] = []
+    if (note.meetingTitle) meta.push(`Встреча: ${note.meetingTitle}`)
+    if (note.remindTime && !note.taskCompleted) meta.push(`Напоминание: ${note.remindTime}`)
+    const bodyText = meta.length > 0 ? `${note.text}\n${meta.join(' · ')}` : note.text
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildGenericThreePartPayload({
+          headerText: 'Заметка',
+          bodyText,
+          items: ['Дописать голосом', 'Привязать к встрече', 'Удалить'],
+        }),
+      ),
+    )
+  }
+
+  async function openNoteBindMeetingMenu(): Promise<void> {
+    if (disposed || !activeNote) return
+    screen = 'note-bind-meeting'
+    bindMeetingIndex = 0
+    let items: MeetingListItem[] = meetingsData?.items ?? []
+    try {
+      const fetched = await fetchMeetings(bridge)
+      meetingsData = fetched
+      items = fetched.items
+    } catch {
+      // ignore
+    }
+    bindMeetingChoices = items.slice(0, 5).map((ev) => ({
+      eventId: ev.id,
+      title: `${ev.title} ${ev.startTime}`,
+      label: `${ev.startTime} ${ev.title}`,
+    }))
+    bindMeetingChoices.push({ eventId: null, title: null, label: 'Без встречи' })
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildGenericListPagePayload({
+          headerText: 'Привязать к встрече',
+          items: bindMeetingChoices.map((c) => c.label),
+          emptyText: 'Встреч не найдено',
+        }),
+      ),
+    )
+  }
+
+  async function startNoteDeleteUndo(): Promise<void> {
+    if (disposed || !activeNote || isActionInFlight) return
+    stopSendTimer()
+    sendCancelled = false
+    screen = 'note-delete-undo'
+    let secondsLeft = CALENDAR_UNDO_SECONDS
+    const targetId = activeNote.id
+    const snippet = activeNote.text.slice(0, 60)
+
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildVoiceStatusPayload(`Удаление через ${secondsLeft}с…`, `${snippet}\n\n2x тап — отмена`),
+      ),
+    )
+
+    sendTimer = window.setInterval(() => {
+      if (disposed || sendCancelled || screen !== 'note-delete-undo') {
+        stopSendTimer()
+        return
+      }
+      secondsLeft -= 1
+      if (secondsLeft > 0) {
+        void bridge.textContainerUpgrade(
+          new TextContainerUpgrade({
+            containerID: VOICE_HEADER_ID,
+            containerName: VOICE_HEADER_NAME,
+            content: `Удаление через ${secondsLeft}с…`,
+          }),
+        )
+        return
+      }
+      stopSendTimer()
+      void deleteNote(bridge, targetId)
+        .then(() => {
+          activeNote = null
+          return openNotesList(notesFilterMeetingId)
+        })
+        .catch(() => openNotesList(notesFilterMeetingId))
+    }, 1000)
+  }
+
+  async function openPromiseConfirmScreen(suggestion: PromiseSuggestion): Promise<void> {
+    if (disposed) return
+    activePromiseSuggestion = suggestion
+    promiseActionIndex = 0
+    screen = 'promise-confirm'
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildGenericThreePartPayload({
+          headerText: suggestion.headerSentTo,
+          bodyText: `${suggestion.replyText}\n${suggestion.promptQuestion}`,
+          items: [suggestion.defaultOption.label, 'Другое время', 'Не надо'],
+        }),
+      ),
+    )
+  }
+
+  async function openPromiseAltTimeScreen(): Promise<void> {
+    if (disposed || !activePromiseSuggestion) return
+    promiseActionIndex = 0
+    screen = 'promise-alt-time'
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildGenericListPagePayload({
+          headerText: activePromiseSuggestion.promptQuestion,
+          items: [
+            ...activePromiseSuggestion.altOptions.map((o) => o.label),
+            'Отмена',
+          ],
+          emptyText: 'Отмена',
+        }),
+      ),
+    )
+  }
+
+  async function savePromiseAt(remindAt: number): Promise<void> {
+    if (!activePromiseSuggestion || isActionInFlight) return
+    isActionInFlight = true
+    const s = activePromiseSuggestion
+    activePromiseSuggestion = null
+    try {
+      await createPromiseReminder(bridge, {
+        messageId: s.messageId,
+        chatId: s.chatId,
+        contactName: s.contactName,
+        replyText: s.replyText,
+        taskText: s.taskText,
+        promisedAtTime: s.promisedAtTime,
+        remindAt,
+      })
+    } catch {
+      // ignore
+    } finally {
+      isActionInFlight = false
+    }
+    await returnToInbox()
+  }
+
+  async function openNewMeetingScreen(
+    pm: ProposedMeetingInfo,
+    chatId?: number,
+  ): Promise<void> {
+    if (disposed) return
+    activeProposedMeeting = pm
+    proposedMeetingChatId = chatId
+    preparedBrief = null
+    newMeetingActionIndex = 0
+    screen = 'new-meeting'
+    const statusText = pm.isFree
+      ? 'ты свободен'
+      : `!! занят: ${pm.conflict?.title ?? 'встреча'}`
+    const items = ['Создать + бриф голосом', 'Создать без брифа']
+    if (pm.altSlots.length > 0) {
+      items.push('Другое время')
+    }
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildGenericThreePartPayload({
+          headerText: 'Новая встреча',
+          bodyText: `${pm.title}\n${pm.displayWhen} · ${statusText}`,
+          items,
+        }),
+      ),
+    )
+  }
+
+  async function openNewMeetingSlotsScreen(): Promise<void> {
+    if (disposed || !activeProposedMeeting) return
+    newMeetingSlotIndex = 0
+    screen = 'new-meeting-slots'
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildGenericListPagePayload({
+          headerText: 'Другое время',
+          items: activeProposedMeeting.altSlots.map((s) => s.displayWhen),
+          emptyText: 'Свободных слотов рядом нет',
+        }),
+      ),
+    )
+  }
+
+  async function openMeetingBriefReviewScreen(): Promise<void> {
+    if (disposed || !preparedBrief) return
+    briefReviewActionIndex = 0
+    screen = 'meeting-brief-review'
+    const aiLine = preparedBrief.aiAdded ? `\nИИ добавил: ${preparedBrief.aiAdded}` : ''
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildGenericThreePartPayload({
+          headerText: 'Бриф встречи',
+          bodyText: `Ты: ${preparedBrief.userSaid}${aiLine}`,
+          items: ['Сохранить', 'Дописать голосом'],
+        }),
+      ),
+    )
+  }
+
+  async function startCalendarCreateUndo(description?: string): Promise<void> {
+    if (disposed || !activeProposedMeeting || isActionInFlight) return
+    stopSendTimer()
+    sendCancelled = false
+    screen = 'calendar-create-undo'
+    let secondsLeft = CALENDAR_UNDO_SECONDS
+    const pm = activeProposedMeeting
+
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(
+        buildVoiceStatusPayload(
+          `Создание через ${secondsLeft}с…`,
+          `${pm.title}\n${pm.displayWhen}\n\n2x тап — отмена`,
+        ),
+      ),
+    )
+
+    sendTimer = window.setInterval(() => {
+      if (disposed || sendCancelled || screen !== 'calendar-create-undo') {
+        stopSendTimer()
+        return
+      }
+      secondsLeft -= 1
+      if (secondsLeft > 0) {
+        void bridge.textContainerUpgrade(
+          new TextContainerUpgrade({
+            containerID: VOICE_HEADER_ID,
+            containerName: VOICE_HEADER_NAME,
+            content: `Создание через ${secondsLeft}с…`,
+          }),
+        )
+        return
+      }
+      stopSendTimer()
+      void createCalendarMeeting(bridge, {
+        title: pm.title,
+        startIso: pm.startIso,
+        endIso: pm.endIso,
+        description,
+      })
+        .then(() => {
+          activeProposedMeeting = null
+          preparedBrief = null
+          return returnToHome()
+        })
+        .catch(() => openNewMeetingScreen(pm, proposedMeetingChatId))
+    }, 1000)
+  }
+
+  async function openDigestListScreen(): Promise<void> {
+    if (disposed) return
+    digestSelectedIndex = 0
+    screen = 'digest-list'
+    try {
+      const res = await fetchDigestList(bridge)
+      if (disposed || screen !== 'digest-list') return
+      digestItems = res.items
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(
+          buildGenericListPagePayload({
+            headerText: `Дайджест · ${digestItems.length}`,
+            items: digestItems.map((it) => `${it.channel}  ${it.gist}`),
+            emptyText: 'Новых постов за 48 ч нет\n\n2x тап — Главная',
+          }),
+        ),
+      )
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(
+            buildGenericListPagePayload({
+              headerText: 'Дайджест',
+              items: [],
+              emptyText: 'Ошибка загрузки дайджеста\n\n2x тап — Главная',
+            }),
+          ),
+        )
+      }
+    }
+  }
+
+  function formatDigestPostHeader(post: DigestPostDetail, idx: number, total: number): string {
+    return clampUtf8(`${post.channel} · ${post.time} · ${idx + 1}/${total}`, 63)
+  }
+
+  async function openDigestPostScreen(id: number): Promise<void> {
+    if (disposed || isActionInFlight) return
+    isActionInFlight = true
+    try {
+      const post = await fetchDigestPost(bridge, id)
+      if (disposed) return
+      activeDigestPost = post
+      digestPages = paginateLensText(post.text, 180)
+      digestPageIndex = 0
+      screen = 'digest-post'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer({
+          containerTotalNum: 2,
+          textObject: [
+            new TextContainerProperty({
+              xPosition: 0,
+              yPosition: 0,
+              width: 576,
+              height: 44,
+              borderWidth: 0,
+              borderColor: 5,
+              paddingLength: 4,
+              containerID: TRANSCRIPT_HEADER_ID,
+              containerName: TRANSCRIPT_HEADER_NAME,
+              content: formatDigestPostHeader(post, 0, digestPages.length),
+              isEventCapture: 0,
+            }),
+            new TextContainerProperty({
+              xPosition: 0,
+              yPosition: 46,
+              width: 576,
+              height: 242,
+              borderWidth: 0,
+              borderColor: 5,
+              paddingLength: 4,
+              containerID: TRANSCRIPT_BODY_ID,
+              containerName: TRANSCRIPT_BODY_NAME,
+              content: digestPages[0] ?? '',
+              isEventCapture: 1,
+            }),
+          ],
+          menuObject: buildMenuObject(false),
+        }),
+      )
+    } catch {
+      await openDigestListScreen()
+    } finally {
+      isActionInFlight = false
+    }
+  }
+
+  async function stepDigestPage(delta: -1 | 1): Promise<void> {
+    if (disposed || !activeDigestPost || screen !== 'digest-post') return
+    const nextIdx = digestPageIndex + delta
+    if (nextIdx < 0 || nextIdx >= digestPages.length) return
+    digestPageIndex = nextIdx
+    await bridge.textContainerUpgrade(
+      new TextContainerUpgrade({
+        containerID: TRANSCRIPT_HEADER_ID,
+        containerName: TRANSCRIPT_HEADER_NAME,
+        content: formatDigestPostHeader(activeDigestPost, digestPageIndex, digestPages.length),
+      }),
+    )
+    await bridge.textContainerUpgrade(
+      new TextContainerUpgrade({
+        containerID: TRANSCRIPT_BODY_ID,
+        containerName: TRANSCRIPT_BODY_NAME,
+        content: digestPages[digestPageIndex] ?? '',
+      }),
+    )
   }
 
   function startSseSubscription(): void {
@@ -1928,8 +2554,19 @@ export async function startGlassesApp(): Promise<void> {
   async function executeSend(cardId: number, draftIndex: number): Promise<void> {
     if (disposed || isActionInFlight) return
     isActionInFlight = true
+    const currentChatId = activeCard?.chatId
     try {
-      await sendMessageReply(bridge, cardId, draftIndex)
+      const res = await sendMessageReply(bridge, cardId, draftIndex)
+      if (res.promiseSuggestion) {
+        isActionInFlight = false
+        await openPromiseConfirmScreen(res.promiseSuggestion)
+        return
+      }
+      if (res.suggestCreateMeeting && res.proposedMeeting) {
+        isActionInFlight = false
+        await openNewMeetingScreen(res.proposedMeeting, currentChatId)
+        return
+      }
       await returnToInbox()
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -2003,6 +2640,26 @@ export async function startGlassesApp(): Promise<void> {
 
   async function returnToActiveCard(): Promise<void> {
     if (disposed) return
+    if (recordingPurpose === 'new-note') {
+      if (noteDraftAnalysis) {
+        await renderNoteReviewScreen()
+      } else {
+        await returnFromNotes()
+      }
+      return
+    }
+    if (recordingPurpose === 'append-note' && activeNote) {
+      await openNoteDetail(activeNote)
+      return
+    }
+    if (recordingPurpose === 'meeting-brief' && activeProposedMeeting) {
+      if (preparedBrief) {
+        await openMeetingBriefReviewScreen()
+      } else {
+        await openNewMeetingScreen(activeProposedMeeting, proposedMeetingChatId)
+      }
+      return
+    }
     if (!activeCard) {
       await returnToInbox()
       return
@@ -2023,8 +2680,13 @@ export async function startGlassesApp(): Promise<void> {
   }
 
   function formatRecordingHeader(elapsedSec: number, mode: 'hold' | 'menu'): string {
+    const dur = formatDurationMmSs(elapsedSec)
+    if (recordingPurpose === 'new-note' || recordingPurpose === 'append-note' || recordingPurpose === 'meeting-brief') {
+      const hint = mode === 'hold' ? 'отпусти, чтобы закончить' : 'тап — стоп'
+      return clampUtf8(`● ${dur} · Говори… ${hint}`, 63)
+    }
     const stopHint = mode === 'hold' ? 'release to stop' : 'tap to stop'
-    return `● REC ${formatDurationMmSs(elapsedSec)} · ${stopHint}`
+    return `● REC ${dur} · ${stopHint}`
   }
 
   async function executeVoiceSend(): Promise<void> {
@@ -2139,17 +2801,22 @@ export async function startGlassesApp(): Promise<void> {
     await returnToActiveCard()
   }
 
-  async function startVoiceRecording(mode: 'hold' | 'menu'): Promise<void> {
-    if (disposed || !activeCard || isRecordingActive || isActionInFlight) return
+  async function startVoiceRecording(
+    mode: 'hold' | 'menu',
+    purpose: 'chat-voice' | 'new-note' | 'append-note' | 'meeting-brief' = 'chat-voice',
+  ): Promise<void> {
+    if (disposed || isRecordingActive || isActionInFlight) return
+    if (purpose === 'chat-voice' && !activeCard) return
 
     stopSendTimer()
     stopVoiceTimers()
-    preVoiceScreen =
-      screen === 'transcript-pages'
-        ? 'transcript-pages'
-        : screen === 'card-full'
-          ? 'card-full'
-          : 'card'
+    if (screen !== 'recording') {
+      preVoiceScreen = screen
+      if (purpose === 'new-note' && screen !== 'note-review') {
+        preNotesScreen = screen
+      }
+    }
+    recordingPurpose = purpose
     recordingMode = mode
     holdReleasedEarly = false
     pcmChunks = []
@@ -2168,7 +2835,7 @@ export async function startGlassesApp(): Promise<void> {
       screen = 'voice-error'
       await bridge.rebuildPageContainer(
         new RebuildPageContainer(
-          buildVoiceStatusPayload('Mic unavailable', '2×tap back'),
+          buildVoiceStatusPayload('Микрофон недоступен', '2×тап — назад'),
         ),
       )
       return
@@ -2179,12 +2846,21 @@ export async function startGlassesApp(): Promise<void> {
       return
     }
 
+    const bodyHint =
+      purpose === 'chat-voice'
+        ? mode === 'hold'
+          ? 'Release to finish recording'
+          : 'Tap to finish recording'
+        : mode === 'hold'
+          ? 'Говори… отпусти, чтобы закончить'
+          : 'Говори… тап, чтобы закончить'
+
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
         buildVoiceStatusPayload(
           formatRecordingHeader(0, mode),
-          mode === 'hold' ? 'Release to finish recording' : 'Tap to finish recording',
-          true,
+          bodyHint,
+          purpose === 'chat-voice',
         ),
       ),
     )
@@ -2222,7 +2898,7 @@ export async function startGlassesApp(): Promise<void> {
     stopVoiceTimers()
 
     await bridge.audioControl(false)
-    if (disposed || !activeCard) return
+    if (disposed) return
 
     const encoded = encodeWavPcm16Mono(pcmChunks)
     pcmChunks = []
@@ -2232,7 +2908,7 @@ export async function startGlassesApp(): Promise<void> {
       pendingWav = null
       screen = 'voice-too-short'
       await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildVoiceStatusPayload('Too short', '')),
+        new RebuildPageContainer(buildVoiceStatusPayload('Слишком коротко', '')),
       )
       voiceShortDismissTimer = window.setTimeout(() => {
         voiceShortDismissTimer = null
@@ -2240,6 +2916,59 @@ export async function startGlassesApp(): Promise<void> {
       }, 1000)
       return
     }
+
+    // STT allowed ONLY for notes and meeting brief (Prompts 4 & 6)
+    if (recordingPurpose === 'new-note') {
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildVoiceStatusPayload('Расшифровка…', 'Подождите…')),
+      )
+      try {
+        noteDraftAnalysis = await transcribeNoteVoice(bridge, encoded.wavBytes)
+        noteDraftBindMeeting = null
+        await renderNoteReviewScreen()
+      } catch {
+        screen = 'voice-error'
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(
+            buildVoiceStatusPayload('Не удалось расшифровать', '2×тап — назад'),
+          ),
+        )
+      }
+      return
+    }
+
+    if (recordingPurpose === 'append-note' && activeNote) {
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildVoiceStatusPayload('Расшифровка…', 'Дописываю заметку…')),
+      )
+      try {
+        const res = await appendNoteVoice(bridge, activeNote.id, encoded.wavBytes)
+        await openNoteDetail(res.note)
+      } catch {
+        await openNoteDetail(activeNote)
+      }
+      return
+    }
+
+    if (recordingPurpose === 'meeting-brief' && activeProposedMeeting) {
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildVoiceStatusPayload('Готовлю бриф…', 'Расшифровка + чат…')),
+      )
+      try {
+        preparedBrief = await prepareMeetingBriefVoice(
+          bridge,
+          encoded.wavBytes,
+          proposedMeetingChatId,
+          preparedBrief?.userSaid,
+        )
+        await openMeetingBriefReviewScreen()
+      } catch {
+        await openNewMeetingScreen(activeProposedMeeting, proposedMeetingChatId)
+      }
+      return
+    }
+
+    if (!activeCard) return
 
     pendingWav = encoded
     voiceConfirmIndex = 0
@@ -2422,12 +3151,78 @@ export async function startGlassesApp(): Promise<void> {
         void cancelMeetingActionUndo()
         return
       }
-      if (screen === 'reminder-overlay') {
-        void dismissReminderOverlay()
+      if (screen === 'calendar-create-undo') {
+        sendCancelled = true
+        stopSendTimer()
+        if (preparedBrief) {
+          void openMeetingBriefReviewScreen()
+        } else if (activeProposedMeeting) {
+          void openNewMeetingScreen(activeProposedMeeting, proposedMeetingChatId)
+        } else {
+          void returnToHome()
+        }
         return
       }
-      if (screen === 'coming-soon') {
-        void returnFromComingSoon()
+      if (screen === 'note-delete-undo') {
+        sendCancelled = true
+        stopSendTimer()
+        if (activeNote) {
+          void openNoteDetail(activeNote)
+        } else {
+          void openNotesList(notesFilterMeetingId)
+        }
+        return
+      }
+      if (screen === 'note-bind-meeting' && activeNote) {
+        void openNoteDetail(activeNote)
+        return
+      }
+      if (screen === 'note-detail') {
+        void openNotesList(notesFilterMeetingId)
+        return
+      }
+      if (screen === 'note-review' || screen === 'notes-list') {
+        noteDraftAnalysis = null
+        void returnFromNotes()
+        return
+      }
+      if (screen === 'promise-alt-time' && activePromiseSuggestion) {
+        void openPromiseConfirmScreen(activePromiseSuggestion)
+        return
+      }
+      if (screen === 'promise-confirm') {
+        activePromiseSuggestion = null
+        void returnToInbox()
+        return
+      }
+      if (screen === 'new-meeting-slots' || screen === 'meeting-brief-review') {
+        if (activeProposedMeeting) {
+          void openNewMeetingScreen(activeProposedMeeting, proposedMeetingChatId)
+        } else {
+          void returnToInbox()
+        }
+        return
+      }
+      if (screen === 'new-meeting') {
+        activeProposedMeeting = null
+        preparedBrief = null
+        if (activeCard) {
+          void backFromCardFull()
+        } else {
+          void returnToInbox()
+        }
+        return
+      }
+      if (screen === 'digest-post') {
+        void openDigestListScreen()
+        return
+      }
+      if (screen === 'digest-list') {
+        void returnToHome()
+        return
+      }
+      if (screen === 'reminder-overlay') {
+        void dismissReminderOverlay()
         return
       }
       if (screen === 'meeting-card') {
@@ -2480,9 +3275,9 @@ export async function startGlassesApp(): Promise<void> {
         return
       }
       if (itemId === MENU_NEW_NOTE_ID) {
-        void openComingSoon('Новая заметка')
+        void startVoiceRecording('menu', 'new-note')
       } else if (itemId === MENU_MY_NOTES_ID) {
-        void openComingSoon('Мои заметки')
+        void openNotesList()
       } else if (itemId === MENU_HOME_ID) {
         void returnToHome()
       } else if (itemId === MENU_REFRESH_ID) {
@@ -2492,6 +3287,10 @@ export async function startGlassesApp(): Promise<void> {
           void openMeetingsFromHome()
         } else if (screen === 'meeting-card' && activeMeetingBrief) {
           void openMeetingBriefById(activeMeetingBrief.id)
+        } else if (screen === 'notes-list') {
+          void openNotesList(notesFilterMeetingId)
+        } else if (screen === 'digest-list') {
+          void openDigestListScreen()
         } else if (screen === 'inbox' || screen === 'inbox-error') {
           scheduleInboxRefresh(true)
         } else if (
@@ -2502,6 +3301,25 @@ export async function startGlassesApp(): Promise<void> {
         }
       }
       return
+    }
+
+    if (screen === 'digest-post') {
+      if (
+        textType === OsEventTypeList.SCROLL_BOTTOM_EVENT ||
+        sysType === OsEventTypeList.SCROLL_BOTTOM_EVENT ||
+        listType === OsEventTypeList.SCROLL_BOTTOM_EVENT
+      ) {
+        void stepDigestPage(1)
+        return
+      }
+      if (
+        textType === OsEventTypeList.SCROLL_TOP_EVENT ||
+        sysType === OsEventTypeList.SCROLL_TOP_EVENT ||
+        listType === OsEventTypeList.SCROLL_TOP_EVENT
+      ) {
+        void stepDigestPage(-1)
+        return
+      }
     }
 
     if (screen === 'transcript-pages') {
@@ -2532,6 +3350,24 @@ export async function startGlassesApp(): Promise<void> {
         meetingActionIndex = event.listEvent.currentSelectItemIndex
       } else if (screen === 'reminder-overlay') {
         reminderSelectedIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'notes-list') {
+        noteSelectedIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'note-review') {
+        noteReviewActionIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'note-detail') {
+        noteDetailActionIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'note-bind-meeting') {
+        bindMeetingIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'promise-confirm' || screen === 'promise-alt-time') {
+        promiseActionIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'new-meeting') {
+        newMeetingActionIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'new-meeting-slots') {
+        newMeetingSlotIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'meeting-brief-review') {
+        briefReviewActionIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'digest-list') {
+        digestSelectedIndex = event.listEvent.currentSelectItemIndex
       } else if (screen === 'inbox') {
         selectedIndex = event.listEvent.currentSelectItemIndex
       } else if (screen === 'card') {
@@ -2574,11 +3410,6 @@ export async function startGlassesApp(): Promise<void> {
         return
       }
 
-      if (screen === 'coming-soon') {
-        void returnFromComingSoon()
-        return
-      }
-
       if (screen === 'home-error') {
         void refreshHomeNow(undefined, true)
         return
@@ -2593,17 +3424,176 @@ export async function startGlassesApp(): Promise<void> {
         } else if (chosen?.action === 'meetings') {
           void openMeetingsFromHome()
         } else if (chosen?.action === 'digest') {
-          void openComingSoon('Дайджест')
+          void openDigestListScreen()
+        }
+        return
+      }
+
+      if (screen === 'digest-list' && digestItems.length > 0) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? digestSelectedIndex
+        const post = digestItems[idx]
+        if (post) {
+          void openDigestPostScreen(post.id)
+        }
+        return
+      }
+
+      if (screen === 'notes-list' && notesList.length > 0) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? noteSelectedIndex
+        const note = notesList[idx]
+        if (note) {
+          void openNoteDetail(note)
+        }
+        return
+      }
+
+      if (screen === 'note-review' && noteDraftAnalysis) {
+        const actions = getNoteReviewActions()
+        const idx = event.listEvent?.currentSelectItemIndex ?? noteReviewActionIndex
+        const chosen = actions[idx]
+        if (chosen?.id === 'bind_matched' && noteDraftAnalysis.matchedMeeting) {
+          noteDraftBindMeeting = {
+            eventId: noteDraftAnalysis.matchedMeeting.eventId,
+            label: noteDraftAnalysis.matchedMeeting.label,
+          }
+          void renderNoteReviewScreen()
+        } else if (chosen?.id === 'rerecord') {
+          void startVoiceRecording('menu', 'new-note')
+        } else if (chosen?.id === 'discard') {
+          noteDraftAnalysis = null
+          noteDraftBindMeeting = null
+          void returnFromNotes()
+        } else if (chosen?.id === 'save_rem' || chosen?.id === 'save_no_rem') {
+          const analysis = noteDraftAnalysis
+          const bind = noteDraftBindMeeting
+          noteDraftAnalysis = null
+          noteDraftBindMeeting = null
+          void createNote(bridge, {
+            text: analysis.transcript,
+            meetingEventId: bind?.eventId ?? null,
+            meetingTitle: bind?.label ?? null,
+            remindAt: chosen.id === 'save_rem' ? (analysis.taskReminder?.remindAt ?? null) : null,
+          }).then(() => openNotesList())
+        }
+        return
+      }
+
+      if (screen === 'note-detail' && activeNote) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? noteDetailActionIndex
+        if (idx === 0) {
+          void startVoiceRecording('menu', 'append-note')
+        } else if (idx === 1) {
+          void openNoteBindMeetingMenu()
+        } else if (idx === 2) {
+          void startNoteDeleteUndo()
+        }
+        return
+      }
+
+      if (screen === 'note-bind-meeting' && activeNote) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? bindMeetingIndex
+        const choice = bindMeetingChoices[idx]
+        if (choice) {
+          void updateNote(bridge, activeNote.id, {
+            meetingEventId: choice.eventId,
+            meetingTitle: choice.title,
+          }).then((res) => openNoteDetail(res.note))
+        }
+        return
+      }
+
+      if (screen === 'promise-confirm' && activePromiseSuggestion) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? promiseActionIndex
+        if (idx === 0) {
+          void savePromiseAt(activePromiseSuggestion.defaultOption.remindAt)
+        } else if (idx === 1) {
+          void openPromiseAltTimeScreen()
+        } else {
+          activePromiseSuggestion = null
+          void returnToInbox()
+        }
+        return
+      }
+
+      if (screen === 'promise-alt-time' && activePromiseSuggestion) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? promiseActionIndex
+        const opt = activePromiseSuggestion.altOptions[idx]
+        if (opt) {
+          void savePromiseAt(opt.remindAt)
+        } else {
+          void openPromiseConfirmScreen(activePromiseSuggestion)
+        }
+        return
+      }
+
+      if (screen === 'new-meeting' && activeProposedMeeting) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? newMeetingActionIndex
+        if (idx === 0) {
+          void startVoiceRecording('menu', 'meeting-brief')
+        } else if (idx === 1) {
+          void startCalendarCreateUndo()
+        } else if (idx === 2) {
+          void openNewMeetingSlotsScreen()
+        }
+        return
+      }
+
+      if (screen === 'new-meeting-slots' && activeProposedMeeting) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? newMeetingSlotIndex
+        const slot = activeProposedMeeting.altSlots[idx]
+        if (slot) {
+          activeProposedMeeting = {
+            ...activeProposedMeeting,
+            startIso: slot.startIso,
+            endIso: slot.endIso,
+            displayWhen: slot.displayWhen,
+            isFree: true,
+            conflict: null,
+          }
+          void openNewMeetingScreen(activeProposedMeeting, proposedMeetingChatId)
+        }
+        return
+      }
+
+      if (screen === 'meeting-brief-review' && preparedBrief) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? briefReviewActionIndex
+        if (idx === 0) {
+          void startCalendarCreateUndo(preparedBrief.combinedDescription)
+        } else {
+          void startVoiceRecording('menu', 'meeting-brief')
         }
         return
       }
 
       if (screen === 'reminder-overlay' && activeReminder) {
         const idx = event.listEvent?.currentSelectItemIndex ?? reminderSelectedIndex
-        if (idx === 0 && activeReminder.eventId) {
-          const eventId = activeReminder.eventId
+        const rem = activeReminder
+        if (rem.kind === 'task' && rem.noteId) {
           activeReminder = null
-          void openMeetingBriefById(eventId)
+          const act = idx === 0 ? completeTaskNote(bridge, rem.noteId) : snoozeTaskNote(bridge, rem.noteId)
+          void act.finally(() => dismissReminderOverlay())
+          return
+        }
+        if (rem.kind === 'promise' && rem.promiseId) {
+          activeReminder = null
+          if (idx === 0) {
+            void completePromiseReminder(bridge, rem.promiseId).finally(() => dismissReminderOverlay())
+          } else if (idx === 1 && rem.chatId) {
+            void fetchInbox(bridge)
+              .then((inb) => {
+                const match = inb.items.find((it) => it.chatId === rem.chatId)
+                if (match) return openCard(match.id)
+                return returnToInbox()
+              })
+              .catch(() => returnToInbox())
+          } else {
+            void snoozePromiseReminder(bridge, rem.promiseId).finally(() => dismissReminderOverlay())
+          }
+          return
+        }
+        if (idx === 0 && rem.eventId) {
+          activeReminder = null
+          void openMeetingBriefById(rem.eventId)
         } else {
           void dismissReminderOverlay()
         }
@@ -2652,7 +3642,12 @@ export async function startGlassesApp(): Promise<void> {
         if (event.listEvent?.currentSelectItemIndex !== undefined) {
           cardDraftIndex = event.listEvent.currentSelectItemIndex
         }
-        if (cardDraftIndex >= activeCard.drafts.length) {
+        const draftsCount = Math.min(4, activeCard.drafts.length)
+        if (activeCard.proposedMeeting && cardDraftIndex === draftsCount) {
+          void openNewMeetingScreen(activeCard.proposedMeeting, activeCard.chatId)
+          return
+        }
+        if (cardDraftIndex >= draftsCount) {
           void skipActiveCard()
           return
         }

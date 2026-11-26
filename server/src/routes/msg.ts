@@ -2,6 +2,7 @@ import { and, desc, eq, gt } from 'drizzle-orm'
 import { Api, InputFile } from 'grammy'
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { getProviderForUser, type LlmProvider } from '../ai/provider.js'
 import {
   buildFallbackTriage,
   buildMediaFallbackTriage,
@@ -20,6 +21,10 @@ import {
   type GoogleCalendarClient,
 } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
+import { formatTimeHHMM } from '../lib/meetings-service.js'
+import { extractPromiseTaskWithAi } from '../lib/notes-service.js'
+import type { ProposedMeetingEvaluation } from '../lib/schedule-conflict.js'
+import { resolvePromiseReminderTimes } from '../lib/time-parser.js'
 import { toOriginalLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
 import { transcodeWavToOpus, type TranscodeWavFn } from '../voice/transcode.js'
@@ -144,12 +149,36 @@ async function readBoundedBody(req: Request, maxBytes: number): Promise<Buffer |
   return Buffer.concat(chunks)
 }
 
+function parseStoredExtras(raw: string | null): {
+  conflictLine: string | null
+  proposedMeeting: ProposedMeetingEvaluation | null
+} {
+  if (!raw) return { conflictLine: null, proposedMeeting: null }
+  try {
+    const obj = JSON.parse(raw) as {
+      conflict?: { title?: string; start?: string; end?: string; cardLine?: string } | null
+      proposedMeeting?: ProposedMeetingEvaluation | null
+    }
+    const proposedMeeting = obj.proposedMeeting ?? null
+    const conflictLine =
+      obj.conflict?.cardLine ??
+      (obj.conflict?.title && obj.conflict?.start && obj.conflict?.end
+        ? `У тебя ${obj.conflict.title} ${obj.conflict.start}-${obj.conflict.end}`
+        : null)
+    return { conflictLine, proposedMeeting }
+  } catch {
+    return { conflictLine: null, proposedMeeting: null }
+  }
+}
+
 export function createMsgRouter(options?: {
   db?: AppDb
   sendTelegramMessage?: SendTelegramMessageFn
   sendTelegramVoice?: SendTelegramVoiceFn
   transcodeWav?: TranscodeWavFn
   calendarClient?: GoogleCalendarClient
+  getProvider?: (userId: number) => LlmProvider | null
+  nowProvider?: () => number
 }): Hono<AuthEnv> {
   const router = new Hono<AuthEnv>()
   const sendTelegram = options?.sendTelegramMessage ?? createDefaultSender()
@@ -177,6 +206,7 @@ export function createMsgRouter(options?: {
     }
 
     const media = parseMediaJson(row.mediaJson)
+    const extras = parseStoredExtras(row.aiJson)
     const ai = parseAiOrFallback(row.aiJson, {
       text: row.text,
       fromName: row.fromName,
@@ -260,6 +290,8 @@ export function createMsgRouter(options?: {
       fullText: fullText || compactGist,
       hasMore: true,
       text: toOriginalLens(row.text || '[media]', 120),
+      ...(extras.conflictLine ? { conflictLine: extras.conflictLine } : {}),
+      ...(extras.proposedMeeting ? { proposedMeeting: extras.proposedMeeting } : {}),
       ...(media ? { media } : {}),
       ...(transcript ? { transcript } : {}),
       drafts,
@@ -340,7 +372,7 @@ export function createMsgRouter(options?: {
       return c.json({ error: 'telegram_send_failed' }, 502)
     }
 
-    const now = Date.now()
+    const now = options?.nowProvider ? options.nowProvider() : Date.now()
     db.transaction((tx) => {
       tx.update(messages)
         .set({ status: 'seen' })
@@ -389,21 +421,73 @@ export function createMsgRouter(options?: {
         .run()
     })
 
-    const eventCreated = false
-    let eventId: string | undefined
+    const tz = resolveUserTimeZone(owner?.tz)
+    const promiseTimes = resolvePromiseReminderTimes(replyText, now, tz)
+    let promiseSuggestion:
+      | {
+          chatId: number
+          messageId: number
+          contactName: string
+          headerSentTo: string
+          replyText: string
+          promptQuestion: string
+          taskText: string
+          promisedAtTime: string
+          defaultOption: { label: string; remindAt: number }
+          altOptions: Array<{ label: string; remindAt: number }>
+        }
+      | undefined
+
+    if (promiseTimes) {
+      const provider = options?.getProvider
+        ? options.getProvider(authUser.id)
+        : getProviderForUser(authUser.id, { db })
+      const extracted = await extractPromiseTaskWithAi({
+        contactName: row.fromName,
+        incomingText: row.text,
+        replyText,
+        provider,
+      })
+      const shortContact = toOriginalLens(row.fromName.split(/\s+/)[0] || row.fromName, 16)
+      promiseSuggestion = {
+        chatId: row.chatId,
+        messageId: row.id,
+        contactName: shortContact,
+        headerSentTo: `Отправлено: ${shortContact}`,
+        replyText: toOriginalLens(replyText, 48),
+        promptQuestion: extracted.promptQuestion,
+        taskText: extracted.taskText,
+        promisedAtTime: formatTimeHHMM(now, tz),
+        defaultOption: promiseTimes.defaultOption,
+        altOptions: promiseTimes.altOptions,
+      }
+    }
+
+    const extras = parseStoredExtras(row.aiJson)
+    const isAffirmativeReply =
+      /^\s*(да|ок|окей|хорошо|добро|давай|соглас|буду|смогу|подключ|подойдет|подойдёт|yes|sure|ok|okay|sounds good|let's)(?![\p{L}\p{N}])/iu.test(
+        replyText,
+      ) || /(да,\s*давай|давай\s+в)/iu.test(replyText)
+    const suggestCreateMeeting = Boolean(
+      !promiseSuggestion && extras.proposedMeeting && isAffirmativeReply,
+    )
 
     logger.info('msg_replied', {
       userId: authUser.id,
       messageId: row.id,
       chatId: row.chatId,
       replyTgMessageId: sent.messageId,
-      eventCreated,
+      hasPromise: Boolean(promiseSuggestion),
+      suggestCreateMeeting,
     })
 
     return c.json({
       ok: true,
       tgMessageId: sent.messageId,
-      ...(eventCreated ? { eventCreated, eventId } : {}),
+      ...(promiseSuggestion ? { promiseSuggestion } : {}),
+      ...(suggestCreateMeeting && extras.proposedMeeting
+        ? { suggestCreateMeeting: true, proposedMeeting: extras.proposedMeeting }
+        : {}),
     })
   })
 

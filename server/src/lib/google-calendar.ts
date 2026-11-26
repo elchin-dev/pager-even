@@ -42,6 +42,7 @@ export interface GoogleCalendarClient {
   createEvent(params: {
     refreshToken: string
     summary: string
+    description?: string
     startIso: string
     endIso: string
     timeZone: string
@@ -405,7 +406,7 @@ export function createDefaultGoogleCalendarClient(
       return { eventId: data.id || eventId }
     },
 
-    async createEvent({ refreshToken, summary, startIso, endIso, timeZone }) {
+    async createEvent({ refreshToken, summary, description, startIso, endIso, timeZone }) {
       const { clientId, clientSecret } = getCredentials()
       const accessToken = await refreshGoogleAccessToken({
         refreshToken,
@@ -424,6 +425,7 @@ export function createDefaultGoogleCalendarClient(
           },
           body: JSON.stringify({
             summary,
+            ...(description ? { description } : {}),
             start: { dateTime: startIso, timeZone },
             end: { dateTime: endIso, timeZone },
           }),
