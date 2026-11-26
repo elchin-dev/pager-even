@@ -9,12 +9,22 @@ export interface CalendarSlot {
   label: string
 }
 
+export interface CalendarAttendee {
+  name: string
+  email?: string
+  self?: boolean
+}
+
 export interface CalendarEventItem {
   id: string
   summary: string
+  description?: string
   startMs: number
   endMs: number
   allDay: boolean
+  attendees?: CalendarAttendee[]
+  reminderMinutes?: number | null
+  defaultReminderMinutes?: number | null
 }
 
 export interface GoogleCalendarClient {
@@ -36,6 +46,22 @@ export interface GoogleCalendarClient {
     endIso: string
     timeZone: string
   }): Promise<{ eventId: string }>
+  rescheduleEvent?(params: {
+    refreshToken: string
+    eventId: string
+    startIso: string
+    endIso: string
+    timeZone: string
+  }): Promise<{ eventId: string }>
+}
+
+export function hasCalendarWriteScope(scope?: string | null): boolean {
+  if (!scope) return false
+  return (
+    scope.includes('https://www.googleapis.com/auth/calendar.events') ||
+    scope.includes('https://www.googleapis.com/auth/calendar ') ||
+    scope.endsWith('https://www.googleapis.com/auth/calendar')
+  )
 }
 
 export const GOOGLE_CALENDAR_SCOPE =
@@ -271,14 +297,32 @@ export function createDefaultGoogleCalendarClient(
       }
 
       const data = (await res.json()) as {
+        defaultReminders?: Array<{ method?: string; minutes?: number }>
         items?: Array<{
           id?: string
           status?: string
           summary?: string
+          description?: string
           start?: { dateTime?: string; date?: string }
           end?: { dateTime?: string; date?: string }
+          attendees?: Array<{
+            displayName?: string
+            email?: string
+            self?: boolean
+            resource?: boolean
+          }>
+          reminders?: {
+            useDefault?: boolean
+            overrides?: Array<{ method?: string; minutes?: number }>
+          }
         }>
       }
+
+      const defaultMins = (data.defaultReminders ?? [])
+        .map((r) => r.minutes)
+        .filter((m): m is number => typeof m === 'number' && m > 0)
+      const defaultReminderMinutes =
+        defaultMins.length > 0 ? Math.min(...defaultMins) : null
 
       const events: CalendarEventItem[] = []
       for (const item of data.items ?? []) {
@@ -290,16 +334,75 @@ export function createDefaultGoogleCalendarClient(
         const startMs = Date.parse(startStr)
         const endMs = Date.parse(endStr)
         if (Number.isNaN(startMs) || Number.isNaN(endMs)) continue
+
+        const attendees: CalendarAttendee[] = (item.attendees ?? [])
+          .filter((a) => !a.resource)
+          .map((a) => ({
+            name:
+              a.displayName?.trim() ||
+              a.email?.split('@')[0]?.replace(/[._-]+/g, ' ').trim() ||
+              'Участник',
+            email: a.email,
+            self: Boolean(a.self),
+          }))
+
+        let reminderMinutes: number | null = null
+        if (item.reminders?.useDefault === false && item.reminders.overrides?.length) {
+          const overrideMins = item.reminders.overrides
+            .map((o) => o.minutes)
+            .filter((m): m is number => typeof m === 'number' && m > 0)
+          if (overrideMins.length > 0) {
+            reminderMinutes = Math.min(...overrideMins)
+          }
+        }
+
         events.push({
           id: item.id || `${startMs}`,
           summary: (item.summary ?? '').trim() || 'Встреча',
+          description: item.description?.trim() || undefined,
           startMs,
           endMs,
           allDay,
+          attendees,
+          reminderMinutes,
+          defaultReminderMinutes,
         })
       }
 
       return events
+    },
+
+    async rescheduleEvent({ refreshToken, eventId, startIso, endIso, timeZone }) {
+      const { clientId, clientSecret } = getCredentials()
+      const accessToken = await refreshGoogleAccessToken({
+        refreshToken,
+        clientId,
+        clientSecret,
+        fetchImpl,
+      })
+
+      const res = await fetchImpl(
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            start: { dateTime: startIso, timeZone },
+            end: { dateTime: endIso, timeZone },
+          }),
+          signal: AbortSignal.timeout(5000),
+        },
+      )
+
+      if (!res.ok) {
+        throw new Error(`Google Calendar reschedule failed (${res.status})`)
+      }
+
+      const data = (await res.json()) as { id?: string }
+      return { eventId: data.id || eventId }
     },
 
     async createEvent({ refreshToken, summary, startIso, endIso, timeZone }) {

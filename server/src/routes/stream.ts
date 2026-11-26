@@ -16,12 +16,16 @@ export function createStreamRouter(): Hono<AuthEnv> {
 
       const unsubscribe = subscribeUserEvents(authUser.id, (event) => {
         if (closed) return
+        const data =
+          event.type === 'reminder'
+            ? JSON.stringify(event.reminder)
+            : JSON.stringify({
+                messageId: event.messageId,
+                chatId: event.chatId,
+              })
         void stream.writeSSE({
           event: event.type,
-          data: JSON.stringify({
-            messageId: event.messageId,
-            chatId: event.chatId,
-          }),
+          data,
         })
       })
 

@@ -16,6 +16,11 @@ import {
 } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
 import { formatGifText, formatStickerText } from '../lib/media-label.js'
+import {
+  fetchUserUpcomingMeetings,
+  rescheduleMeetingByMinutes,
+  sendLateNoticeForMeeting,
+} from '../lib/meetings-service.js'
 import { transcodeMediaToWav16k, type TranscodeMediaToWavFn } from '../voice/transcode.js'
 
 const MAX_INCOMING_MEDIA_BYTES = 20 * 1024 * 1024
@@ -23,6 +28,7 @@ const MAX_INCOMING_MEDIA_DURATION_SEC = 5 * 60
 
 export const ALLOWED_WEBHOOK_UPDATES: ReadonlyArray<Exclude<keyof Update, 'update_id'>> = [
   'message',
+  'callback_query',
   'business_connection',
   'business_message',
   'edited_business_message',
@@ -349,6 +355,75 @@ export function createBot(
 
     const botUsername = await resolveBotUsername(ctx)
     await claimPairCode(db, ctx, text, botUsername)
+  })
+
+  bot.on('callback_query:data', async (ctx) => {
+    const data = ctx.callbackQuery.data
+    const from = ctx.from
+    if (!from || (!data.startsWith('mt:late:') && !data.startsWith('mt:shift:'))) {
+      await ctx.answerCallbackQuery()
+      return
+    }
+
+    const user = db.select().from(users).where(eq(users.tgUserId, from.id)).get()
+    if (!user) {
+      await ctx.answerCallbackQuery({ text: 'Пользователь не найден' })
+      return
+    }
+
+    const isLate = data.startsWith('mt:late:')
+    const eventIdPrefix = isLate ? data.slice('mt:late:'.length) : data.slice('mt:shift:'.length)
+
+    try {
+      const { events, tz } = await fetchUserUpcomingMeetings({
+        db,
+        userId: user.id,
+        calendarClient,
+        nowMs: Date.now(),
+        horizonHours: 48,
+      })
+      const ev = events.find((item) => item.id === eventIdPrefix || item.id.startsWith(eventIdPrefix))
+      if (!ev) {
+        await ctx.answerCallbackQuery({ text: 'Встреча не найдена' })
+        return
+      }
+
+      if (isLate) {
+        const res = await sendLateNoticeForMeeting({
+          db,
+          userId: user.id,
+          event: ev,
+        })
+        if (res.sentCount === 0) {
+          await ctx.answerCallbackQuery({ text: 'Участник не найден в чатах Telegram' })
+          return
+        }
+        await ctx.answerCallbackQuery({ text: 'Отправлено: Опаздываю на 5 мин' })
+        await ctx.reply('Отправил участнику: «Опаздываю на 5 мин».')
+      } else {
+        const res = await rescheduleMeetingByMinutes({
+          db,
+          userId: user.id,
+          event: ev,
+          shiftMinutes: 30,
+          calendarClient,
+          tz,
+        })
+        if (!res.ok) {
+          const msg =
+            res.error === 'calendar_readonly'
+              ? 'Нет прав на запись календаря. Переподключите: /google'
+              : 'Календарь не подключён. Выполните /google'
+          await ctx.answerCallbackQuery({ text: 'Нужно переподключить /google' })
+          await ctx.reply(msg)
+          return
+        }
+        await ctx.answerCallbackQuery({ text: `Перенесено на ${res.newRange}` })
+        await ctx.reply(`Встреча перенесена на +30 мин (${res.newRange}).`)
+      }
+    } catch {
+      await ctx.answerCallbackQuery({ text: 'Ошибка выполнения' })
+    }
   })
 
   bot.on('business_connection', (ctx) => {

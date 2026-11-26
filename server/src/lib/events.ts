@@ -1,8 +1,21 @@
-export type UserEvent = {
-  type: 'inbox'
-  messageId: number
-  chatId: number
+export interface GlassesReminderEvent {
+  kind: 'meeting' | 'task' | 'promise'
+  header: string
+  title: string
+  subtitle: string
+  eventId?: string
 }
+
+export type UserEvent =
+  | {
+      type: 'inbox'
+      messageId: number
+      chatId: number
+    }
+  | {
+      type: 'reminder'
+      reminder: GlassesReminderEvent
+    }
 
 type Listener = (event: UserEvent) => void
 
@@ -24,6 +37,11 @@ export function subscribeUserEvents(userId: number, listener: Listener): () => v
       listenersByUser.delete(userId)
     }
   }
+}
+
+export function hasActiveUserListeners(userId: number): boolean {
+  const set = listenersByUser.get(userId)
+  return Boolean(set && set.size > 0)
 }
 
 export function publishUserEvent(userId: number, event: UserEvent): void {

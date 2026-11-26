@@ -1,13 +1,16 @@
 import { serve } from '@hono/node-server'
 import { createApp } from './app.js'
+import { getDb } from './db/index.js'
 import { runMigrations } from './db/migrate.js'
 import { loadEnv } from './lib/env.js'
 import { logger } from './lib/logger.js'
+import { startMeetingReminderScheduler } from './lib/meetings-service.js'
 import { checkFfmpegAvailable } from './voice/transcode.js'
 
 loadEnv()
 runMigrations()
 void checkFfmpegAvailable()
+startMeetingReminderScheduler({ db: getDb() })
 
 const app = createApp()
 const port = Number(process.env.PORT ?? 8787)

@@ -30,6 +30,7 @@ test('migrations create all 8 tables and webhook handles start, business_connect
       'link_tokens',
       'messages',
       'pair_codes',
+      'sent_reminders',
       'user_settings',
       'users',
     ],

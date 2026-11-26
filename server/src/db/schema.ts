@@ -131,3 +131,23 @@ export const actions = sqliteTable('actions', {
   payload: text('payload').notNull(),
   createdAt: integer('created_at').notNull(),
 })
+
+export const sentReminders = sqliteTable(
+  'sent_reminders',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind', { enum: ['meeting', 'task', 'promise'] }).notNull(),
+    sourceKey: text('source_key').notNull(),
+    sentAt: integer('sent_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('sent_reminders_user_kind_key_uidx').on(
+      table.userId,
+      table.kind,
+      table.sourceKey,
+    ),
+  ],
+)

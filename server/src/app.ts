@@ -6,6 +6,7 @@ import { createBearerAuthMiddleware, type AuthEnv } from './middleware/auth.js'
 import { createGoogleAuthRouter, type GoogleAuthRouterOptions } from './routes/auth-google.js'
 import { createHomeRouter } from './routes/home.js'
 import { createInboxRouter } from './routes/inbox.js'
+import { createMeetingsRouter } from './routes/meetings.js'
 import {
   createMsgRouter,
   type SendTelegramMessageFn,
@@ -62,6 +63,14 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
   app.route(
     '/api/home',
     createHomeRouter({ db: options?.db, calendarClient: options?.calendarClient }),
+  )
+  app.route(
+    '/api/meetings',
+    createMeetingsRouter({
+      db: options?.db,
+      calendarClient: options?.calendarClient,
+      sendTelegramMessage: options?.sendTelegramMessage,
+    }),
   )
   app.route('/api/settings', createSettingsRouter({ db: options?.db }))
   app.route('/api/inbox', createInboxRouter({ db: options?.db }))

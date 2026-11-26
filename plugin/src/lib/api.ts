@@ -75,6 +75,49 @@ export interface HomeResponse {
   }
 }
 
+export interface MeetingListItem {
+  id: string
+  title: string
+  startTime: string
+  endTime: string
+  startMs: number
+  endMs: number
+  isTomorrow: boolean
+  minutesUntil: number | null
+  attendees: string[]
+}
+
+export interface MeetingsListResponse {
+  connected: boolean
+  hasWriteScope: boolean
+  todayCount: number
+  items: MeetingListItem[]
+}
+
+export interface MeetingBrief {
+  id: string
+  title: string
+  startTime: string
+  endTime: string
+  isTomorrow: boolean
+  minutesUntil: number | null
+  attendees: string[]
+  summary: string
+  notesCount: number
+  canSendLate: boolean
+  lateRecipientName: string | null
+  reschedulePreview: string
+  hasWriteScope: boolean
+}
+
+export interface GlassesReminderEvent {
+  kind: 'meeting' | 'task' | 'promise'
+  header: string
+  title: string
+  subtitle: string
+  eventId?: string
+}
+
 export interface InboxItem {
   id: number
   chatId: number
@@ -189,6 +232,41 @@ export async function fetchHome(bridge: EvenAppBridge): Promise<HomeResponse> {
   return parseJson<HomeResponse>(res)
 }
 
+export async function fetchMeetings(bridge: EvenAppBridge): Promise<MeetingsListResponse> {
+  const res = await apiFetch(bridge, '/api/meetings', { method: 'GET' })
+  return parseJson<MeetingsListResponse>(res)
+}
+
+export async function fetchMeetingBrief(
+  bridge: EvenAppBridge,
+  eventId: string,
+): Promise<MeetingBrief> {
+  const res = await apiFetch(bridge, `/api/meetings/${encodeURIComponent(eventId)}`, {
+    method: 'GET',
+  })
+  return parseJson<MeetingBrief>(res)
+}
+
+export async function sendMeetingLate(
+  bridge: EvenAppBridge,
+  eventId: string,
+): Promise<{ ok: true; sentCount: number }> {
+  const res = await apiFetch(bridge, `/api/meetings/${encodeURIComponent(eventId)}/late`, {
+    method: 'POST',
+  })
+  return parseJson<{ ok: true; sentCount: number }>(res)
+}
+
+export async function rescheduleMeeting(
+  bridge: EvenAppBridge,
+  eventId: string,
+): Promise<{ ok: true; newRange: string }> {
+  const res = await apiFetch(bridge, `/api/meetings/${encodeURIComponent(eventId)}/reschedule`, {
+    method: 'POST',
+  })
+  return parseJson<{ ok: true; newRange: string }>(res)
+}
+
 export async function fetchInbox(
   bridge: EvenAppBridge,
   mode?: FeedMode,
@@ -275,6 +353,7 @@ export function subscribeInboxStream(
   bridge: EvenAppBridge,
   handlers: {
     onInbox: (event?: InboxStreamEvent) => void
+    onReminder?: (reminder: GlassesReminderEvent) => void
     onUnauthorized: () => void
   },
 ): () => void {
@@ -356,6 +435,8 @@ export function subscribeInboxStream(
             hasConnectedOnce = true
           } else if (eventName === 'inbox') {
             handlers.onInbox(eventData)
+          } else if (eventName === 'reminder' && eventData && handlers.onReminder) {
+            handlers.onReminder(eventData as unknown as GlassesReminderEvent)
           }
 
           sepIndex = buffer.indexOf('\n\n')

@@ -17,20 +17,26 @@ import {
   clearDeviceToken,
   fetchHome,
   fetchInbox,
+  fetchMeetingBrief,
+  fetchMeetings,
   fetchMessageCard,
   getPairingStatus,
   getStoredDeviceToken,
+  rescheduleMeeting,
   saveDeviceToken,
+  sendMeetingLate,
   sendMessageReply,
   sendVoiceReply,
   skipMessage,
   startPairing,
   subscribeInboxStream,
   type FeedMode,
-  type HomeMeetingItem,
+  type GlassesReminderEvent,
   type HomeResponse,
   type InboxCounts,
   type InboxItem,
+  type MeetingBrief,
+  type MeetingsListResponse,
   type MessageCard,
 } from '../lib/api'
 import {
@@ -102,13 +108,25 @@ const MEETINGS_LIST_ID = 56
 const MEETINGS_LIST_NAME = 'meet-list'
 const MEETINGS_EMPTY_ID = 57
 const MEETINGS_EMPTY_NAME = 'meet-empty'
+const MEETING_BRIEF_BODY_ID = 58
+const MEETING_BRIEF_BODY_NAME = 'meet-brief'
+const MEETING_ACTIONS_ID = 59
+const MEETING_ACTIONS_NAME = 'meet-actions'
 
 const SOON_HEADER_ID = 60
 const SOON_HEADER_NAME = 'soon-header'
 const SOON_BODY_ID = 61
 const SOON_BODY_NAME = 'soon-body'
 
+const REMINDER_HEADER_ID = 62
+const REMINDER_HEADER_NAME = 'rem-header'
+const REMINDER_BODY_ID = 63
+const REMINDER_BODY_NAME = 'rem-body'
+const REMINDER_LIST_ID = 64
+const REMINDER_LIST_NAME = 'rem-list'
+
 const SEND_UNDO_SECONDS = 1
+const CALENDAR_UNDO_SECONDS = 3
 
 const MENU_REFRESH_ID = 1
 const MENU_HOME_ID = 2
@@ -126,6 +144,8 @@ type AppScreen =
   | 'home-error'
   | 'meetings'
   | 'meeting-card'
+  | 'meeting-action-undo'
+  | 'reminder-overlay'
   | 'coming-soon'
   | 'inbox'
   | 'inbox-error'
@@ -364,13 +384,16 @@ function buildHomePayload(
   }
 }
 
-function buildMeetingsPayload(home: HomeResponse | null): {
+function buildMeetingsPayload(
+  data: MeetingsListResponse | null,
+  overrideText?: string,
+): {
   containerTotalNum: number
   textObject: TextContainerProperty[]
   listObject?: ListContainerProperty[]
   menuObject: MenuContainerProperty
 } {
-  const count = home?.meetings.todayCount ?? 0
+  const count = data?.todayCount ?? 0
   const header = new TextContainerProperty({
     xPosition: 0,
     yPosition: 0,
@@ -381,11 +404,32 @@ function buildMeetingsPayload(home: HomeResponse | null): {
     paddingLength: 4,
     containerID: MEETINGS_HEADER_ID,
     containerName: MEETINGS_HEADER_NAME,
-    content: count > 0 ? `Встречи · ${count} сегодня` : 'Встречи · сегодня',
+    content: count > 0 ? `Встречи · сегодня ${count}` : 'Встречи · сегодня',
     isEventCapture: 0,
   })
 
-  if (!home || !home.meetings.connected) {
+  if (overrideText) {
+    const empty = new TextContainerProperty({
+      xPosition: 0,
+      yPosition: 46,
+      width: 576,
+      height: 242,
+      borderWidth: 0,
+      borderColor: 5,
+      paddingLength: 4,
+      containerID: MEETINGS_EMPTY_ID,
+      containerName: MEETINGS_EMPTY_NAME,
+      content: overrideText,
+      isEventCapture: 1,
+    })
+    return {
+      containerTotalNum: 2,
+      textObject: [header, empty],
+      menuObject: buildMenuObject(false),
+    }
+  }
+
+  if (!data || !data.connected) {
     const empty = new TextContainerProperty({
       xPosition: 0,
       yPosition: 46,
@@ -406,9 +450,8 @@ function buildMeetingsPayload(home: HomeResponse | null): {
     }
   }
 
-  const items = home.meetings.items
+  const items = data.items
   if (items.length === 0) {
-    const nextLine = home.nextMeetingLine ? `\n${home.nextMeetingLine}` : ''
     const empty = new TextContainerProperty({
       xPosition: 0,
       yPosition: 46,
@@ -419,7 +462,7 @@ function buildMeetingsPayload(home: HomeResponse | null): {
       paddingLength: 4,
       containerID: MEETINGS_EMPTY_ID,
       containerName: MEETINGS_EMPTY_NAME,
-      content: `Встреч сегодня нет${nextLine}\n\n2x тап — Главная`,
+      content: 'Встреч сегодня и завтра нет\n\n2x тап — Главная',
       isEventCapture: 1,
     })
     return {
@@ -445,11 +488,14 @@ function buildMeetingsPayload(home: HomeResponse | null): {
       itemWidth: 560,
       isItemSelectBorderEn: 1,
       itemName: items.map((ev) => {
-        const right =
-          ev.minutesUntil !== null && ev.minutesUntil < 60
-            ? `через ${ev.minutesUntil} мин`
-            : ev.startTime
-        return formatSplitListLine(ev.title, right)
+        const left = `${ev.startTime}  ${ev.title}`
+        if (ev.isTomorrow) {
+          return formatSplitListLine(left, 'завтра')
+        }
+        if (ev.minutesUntil !== null && ev.minutesUntil < 60) {
+          return formatSplitListLine(left, `через ${ev.minutesUntil} мин`)
+        }
+        return clampUtf8(left, 63)
       }),
     }),
   })
@@ -462,13 +508,28 @@ function buildMeetingsPayload(home: HomeResponse | null): {
   }
 }
 
-function buildMeetingCardPayload(ev: HomeMeetingItem): {
+type MeetingBriefAction = 'late' | 'reschedule'
+
+function getMeetingBriefActions(brief: MeetingBrief): Array<{ action: MeetingBriefAction; label: string }> {
+  const actions: Array<{ action: MeetingBriefAction; label: string }> = []
+  if (brief.canSendLate) {
+    actions.push({ action: 'late', label: clampUtf8('Опаздываю на 5 мин', 63) })
+  }
+  actions.push({ action: 'reschedule', label: clampUtf8('Перенести +30 мин', 63) })
+  return actions
+}
+
+function buildMeetingCardPayload(brief: MeetingBrief): {
   containerTotalNum: number
   textObject: TextContainerProperty[]
+  listObject: ListContainerProperty[]
   menuObject: MenuContainerProperty
 } {
-  const soonPart =
-    ev.minutesUntil !== null && ev.minutesUntil < 60 ? ` · через ${ev.minutesUntil} мин` : ''
+  const timeSuffix = brief.isTomorrow
+    ? ' · завтра'
+    : brief.minutesUntil !== null && brief.minutesUntil < 60
+      ? ` · через ${brief.minutesUntil} мин`
+      : ''
   const header = new TextContainerProperty({
     xPosition: 0,
     yPosition: 0,
@@ -479,25 +540,103 @@ function buildMeetingCardPayload(ev: HomeMeetingItem): {
     paddingLength: 4,
     containerID: MEETINGS_HEADER_ID,
     containerName: MEETINGS_HEADER_NAME,
-    content: clampUtf8(ev.title, 63),
+    content: clampUtf8(brief.title, 63),
     isEventCapture: 0,
   })
   const body = new TextContainerProperty({
     xPosition: 0,
-    yPosition: 46,
+    yPosition: 44,
     width: 576,
-    height: 242,
+    height: 102,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,
-    containerID: MEETINGS_EMPTY_ID,
-    containerName: MEETINGS_EMPTY_NAME,
-    content: `${ev.startTime} - ${ev.endTime}${soonPart}\n\n2x тап — назад`,
+    containerID: MEETING_BRIEF_BODY_ID,
+    containerName: MEETING_BRIEF_BODY_NAME,
+    content: `${brief.startTime}-${brief.endTime}${timeSuffix}\n${brief.summary}`,
+    isEventCapture: 0,
+  })
+  const actions = getMeetingBriefActions(brief)
+  const list = new ListContainerProperty({
+    xPosition: 0,
+    yPosition: 148,
+    width: 576,
+    height: 140,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: MEETING_ACTIONS_ID,
+    containerName: MEETING_ACTIONS_NAME,
     isEventCapture: 1,
+    itemContainer: new ListItemContainerProperty({
+      itemCount: actions.length,
+      itemWidth: 560,
+      isItemSelectBorderEn: 1,
+      itemName: actions.map((a) => a.label),
+    }),
   })
   return {
-    containerTotalNum: 2,
+    containerTotalNum: 3,
     textObject: [header, body],
+    listObject: [list],
+    menuObject: buildMenuObject(false),
+  }
+}
+
+function buildReminderOverlayPayload(reminder: GlassesReminderEvent): {
+  containerTotalNum: number
+  textObject: TextContainerProperty[]
+  listObject: ListContainerProperty[]
+  menuObject: MenuContainerProperty
+} {
+  const header = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 0,
+    width: 576,
+    height: 40,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: REMINDER_HEADER_ID,
+    containerName: REMINDER_HEADER_NAME,
+    content: clampUtf8(reminder.header, 63),
+    isEventCapture: 0,
+  })
+  const body = new TextContainerProperty({
+    xPosition: 0,
+    yPosition: 42,
+    width: 576,
+    height: 112,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: REMINDER_BODY_ID,
+    containerName: REMINDER_BODY_NAME,
+    content: `${reminder.title}\n${reminder.subtitle}`,
+    isEventCapture: 0,
+  })
+  const list = new ListContainerProperty({
+    xPosition: 0,
+    yPosition: 156,
+    width: 576,
+    height: 132,
+    borderWidth: 0,
+    borderColor: 5,
+    paddingLength: 4,
+    containerID: REMINDER_LIST_ID,
+    containerName: REMINDER_LIST_NAME,
+    isEventCapture: 1,
+    itemContainer: new ListItemContainerProperty({
+      itemCount: 2,
+      itemWidth: 560,
+      isItemSelectBorderEn: 1,
+      itemName: ['Открыть бриф', 'Позже'],
+    }),
+  })
+  return {
+    containerTotalNum: 3,
+    textObject: [header, body],
+    listObject: [list],
     menuObject: buildMenuObject(false),
   }
 }
@@ -994,7 +1133,13 @@ export async function startGlassesApp(): Promise<void> {
   let homeSelectedIndex = 0
   let lastHomeSignature = ''
   let isRefreshingHome = false
+  let meetingsData: MeetingsListResponse | null = null
   let meetingSelectedIndex = 0
+  let activeMeetingBrief: MeetingBrief | null = null
+  let meetingActionIndex = 0
+  let activeReminder: GlassesReminderEvent | null = null
+  let reminderSelectedIndex = 0
+  let preReminderScreen: AppScreen = 'home'
   let preSoonScreen: AppScreen = 'home'
 
   let inboxItems: InboxItem[] = []
@@ -1319,19 +1464,212 @@ export async function startGlassesApp(): Promise<void> {
 
   async function openMeetingsFromHome(): Promise<void> {
     if (disposed) return
+    stopSendTimer()
+    activeMeetingBrief = null
+    meetingActionIndex = 0
     screen = 'meetings'
     meetingSelectedIndex = 0
+    try {
+      const data = await fetchMeetings(bridge)
+      if (disposed || screen !== 'meetings') return
+      meetingsData = data
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildMeetingsPayload(data)),
+      )
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        const msg = err instanceof Error ? err.message : 'Ошибка загрузки'
+        await bridge.rebuildPageContainer(
+          new RebuildPageContainer(
+            buildMeetingsPayload(null, `Ошибка: ${msg}\n\n2x тап — Главная`),
+          ),
+        )
+      }
+    }
+  }
+
+  async function openMeetingBriefById(eventId: string): Promise<void> {
+    if (disposed || isActionInFlight) return
+    isActionInFlight = true
+    try {
+      const brief = await fetchMeetingBrief(bridge, eventId)
+      if (disposed) return
+      activeMeetingBrief = brief
+      meetingActionIndex = 0
+      screen = 'meeting-card'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildMeetingCardPayload(brief)),
+      )
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        console.warn('[meetings] brief load failed:', err instanceof Error ? err.message : err)
+        await openMeetingsFromHome()
+      }
+    } finally {
+      isActionInFlight = false
+    }
+  }
+
+  async function executeMeetingAction(
+    eventId: string,
+    action: MeetingBriefAction,
+  ): Promise<void> {
+    if (disposed || isActionInFlight) return
+    isActionInFlight = true
+    try {
+      if (action === 'late') {
+        await sendMeetingLate(bridge, eventId)
+      } else {
+        await rescheduleMeeting(bridge, eventId)
+      }
+      await openMeetingsFromHome()
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        await handleUnauthorized()
+      } else {
+        console.warn('[meetings] action failed:', err instanceof Error ? err.message : err)
+        if (activeMeetingBrief && !disposed) {
+          screen = 'meeting-card'
+          await bridge.rebuildPageContainer(
+            new RebuildPageContainer(buildMeetingCardPayload(activeMeetingBrief)),
+          )
+        } else {
+          await openMeetingsFromHome()
+        }
+      }
+    } finally {
+      isActionInFlight = false
+    }
+  }
+
+  async function startMeetingActionUndo(action: MeetingBriefAction): Promise<void> {
+    if (disposed || !activeMeetingBrief || isActionInFlight) return
+    stopSendTimer()
+    sendCancelled = false
+    screen = 'meeting-action-undo'
+    let secondsLeft = CALENDAR_UNDO_SECONDS
+    const brief = activeMeetingBrief
+    const previewLine =
+      action === 'reschedule'
+        ? `${brief.title}\n${brief.reschedulePreview}`
+        : `${brief.lateRecipientName ?? 'Участнику'}:\nОпаздываю на 5 мин`
+
     await bridge.rebuildPageContainer(
-      new RebuildPageContainer(buildMeetingsPayload(homeData)),
+      new RebuildPageContainer({
+        containerTotalNum: 2,
+        textObject: [
+          new TextContainerProperty({
+            xPosition: 0,
+            yPosition: 0,
+            width: 576,
+            height: 44,
+            borderWidth: 0,
+            borderColor: 5,
+            paddingLength: 4,
+            containerID: SENDING_HEADER_ID,
+            containerName: SENDING_HEADER_NAME,
+            content: `Выполняю через ${secondsLeft}с…`,
+            isEventCapture: 0,
+          }),
+          new TextContainerProperty({
+            xPosition: 0,
+            yPosition: 46,
+            width: 576,
+            height: 242,
+            borderWidth: 0,
+            borderColor: 5,
+            paddingLength: 4,
+            containerID: SENDING_BODY_ID,
+            containerName: SENDING_BODY_NAME,
+            content: `${previewLine}\n\n2x тап — отмена`,
+            isEventCapture: 1,
+          }),
+        ],
+        menuObject: buildMenuObject(false),
+      }),
+    )
+
+    if (disposed || sendCancelled || screen !== 'meeting-action-undo') return
+
+    sendTimer = window.setInterval(() => {
+      if (disposed || sendCancelled || screen !== 'meeting-action-undo') {
+        stopSendTimer()
+        return
+      }
+      secondsLeft -= 1
+      if (secondsLeft > 0) {
+        void bridge.textContainerUpgrade(
+          new TextContainerUpgrade({
+            containerID: SENDING_HEADER_ID,
+            containerName: SENDING_HEADER_NAME,
+            content: `Выполняю через ${secondsLeft}с…`,
+          }),
+        )
+        return
+      }
+      stopSendTimer()
+      void executeMeetingAction(brief.id, action)
+    }, 1000)
+  }
+
+  async function cancelMeetingActionUndo(): Promise<void> {
+    sendCancelled = true
+    stopSendTimer()
+    if (!disposed && activeMeetingBrief) {
+      screen = 'meeting-card'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildMeetingCardPayload(activeMeetingBrief)),
+      )
+    } else {
+      await openMeetingsFromHome()
+    }
+  }
+
+  async function showReminderOverlay(reminder: GlassesReminderEvent): Promise<void> {
+    if (disposed || isRecordingActive) return
+    if (screen !== 'reminder-overlay') {
+      preReminderScreen = screen
+    }
+    activeReminder = reminder
+    reminderSelectedIndex = 0
+    screen = 'reminder-overlay'
+    await bridge.rebuildPageContainer(
+      new RebuildPageContainer(buildReminderOverlayPayload(reminder)),
     )
   }
 
-  async function openMeetingCard(ev: HomeMeetingItem): Promise<void> {
+  async function dismissReminderOverlay(): Promise<void> {
     if (disposed) return
-    screen = 'meeting-card'
-    await bridge.rebuildPageContainer(
-      new RebuildPageContainer(buildMeetingCardPayload(ev)),
-    )
+    activeReminder = null
+    if (preReminderScreen === 'inbox' || preReminderScreen === 'inbox-error') {
+      await returnToInbox()
+    } else if (preReminderScreen === 'meetings') {
+      await openMeetingsFromHome()
+    } else if (preReminderScreen === 'meeting-card' && activeMeetingBrief) {
+      screen = 'meeting-card'
+      await bridge.rebuildPageContainer(
+        new RebuildPageContainer(buildMeetingCardPayload(activeMeetingBrief)),
+      )
+    } else if (
+      (preReminderScreen === 'card' ||
+        preReminderScreen === 'card-full' ||
+        preReminderScreen === 'transcript-pages') &&
+      activeCard
+    ) {
+      if (preReminderScreen === 'transcript-pages') {
+        await openTranscriptPages()
+      } else if (preReminderScreen === 'card-full') {
+        await openCardFull()
+      } else {
+        await backFromCardFull()
+      }
+    } else {
+      await returnToHome()
+    }
   }
 
   async function openComingSoon(title: string): Promise<void> {
@@ -1388,6 +1726,9 @@ export async function startGlassesApp(): Promise<void> {
         ) {
           void refreshActiveCardInPlace(evt?.messageId)
         }
+      },
+      onReminder: (reminder) => {
+        void showReminderOverlay(reminder)
       },
       onUnauthorized: () => {
         void handleUnauthorized()
@@ -2077,6 +2418,14 @@ export async function startGlassesApp(): Promise<void> {
         void returnToActiveCard()
         return
       }
+      if (screen === 'meeting-action-undo') {
+        void cancelMeetingActionUndo()
+        return
+      }
+      if (screen === 'reminder-overlay') {
+        void dismissReminderOverlay()
+        return
+      }
       if (screen === 'coming-soon') {
         void returnFromComingSoon()
         return
@@ -2140,10 +2489,9 @@ export async function startGlassesApp(): Promise<void> {
         if (screen === 'home' || screen === 'home-error') {
           scheduleHomeRefresh(true)
         } else if (screen === 'meetings') {
-          void fetchHome(bridge).then((data) => {
-            homeData = data
-            return openMeetingsFromHome()
-          })
+          void openMeetingsFromHome()
+        } else if (screen === 'meeting-card' && activeMeetingBrief) {
+          void openMeetingBriefById(activeMeetingBrief.id)
         } else if (screen === 'inbox' || screen === 'inbox-error') {
           scheduleInboxRefresh(true)
         } else if (
@@ -2180,6 +2528,10 @@ export async function startGlassesApp(): Promise<void> {
         homeSelectedIndex = event.listEvent.currentSelectItemIndex
       } else if (screen === 'meetings') {
         meetingSelectedIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'meeting-card') {
+        meetingActionIndex = event.listEvent.currentSelectItemIndex
+      } else if (screen === 'reminder-overlay') {
+        reminderSelectedIndex = event.listEvent.currentSelectItemIndex
       } else if (screen === 'inbox') {
         selectedIndex = event.listEvent.currentSelectItemIndex
       } else if (screen === 'card') {
@@ -2246,11 +2598,33 @@ export async function startGlassesApp(): Promise<void> {
         return
       }
 
-      if (screen === 'meetings' && homeData && homeData.meetings.items.length > 0) {
+      if (screen === 'reminder-overlay' && activeReminder) {
+        const idx = event.listEvent?.currentSelectItemIndex ?? reminderSelectedIndex
+        if (idx === 0 && activeReminder.eventId) {
+          const eventId = activeReminder.eventId
+          activeReminder = null
+          void openMeetingBriefById(eventId)
+        } else {
+          void dismissReminderOverlay()
+        }
+        return
+      }
+
+      if (screen === 'meetings' && meetingsData && meetingsData.items.length > 0) {
         const idx = event.listEvent?.currentSelectItemIndex ?? meetingSelectedIndex
-        const ev = homeData.meetings.items[idx]
+        const ev = meetingsData.items[idx]
         if (ev) {
-          void openMeetingCard(ev)
+          void openMeetingBriefById(ev.id)
+        }
+        return
+      }
+
+      if (screen === 'meeting-card' && activeMeetingBrief) {
+        const actions = getMeetingBriefActions(activeMeetingBrief)
+        const idx = event.listEvent?.currentSelectItemIndex ?? meetingActionIndex
+        const chosen = actions[idx]
+        if (chosen) {
+          void startMeetingActionUndo(chosen.action)
         }
         return
       }
