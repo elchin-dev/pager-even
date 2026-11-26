@@ -446,7 +446,6 @@ function buildMeetingsPayload(
   listObject?: ListContainerProperty[]
   menuObject: MenuContainerProperty
 } {
-  const count = data?.todayCount ?? 0
   const header = new TextContainerProperty({
     xPosition: 0,
     yPosition: 0,
@@ -457,7 +456,7 @@ function buildMeetingsPayload(
     paddingLength: 4,
     containerID: MEETINGS_HEADER_ID,
     containerName: MEETINGS_HEADER_NAME,
-    content: count > 0 ? t(`Встречи · сегодня ${count}`, `Meetings · today ${count}`) : t('Встречи · сегодня', 'Meetings · today'),
+    content: t('Встречи', 'Meetings'),
     isEventCapture: 0,
   })
 
@@ -493,7 +492,10 @@ function buildMeetingsPayload(
       paddingLength: 4,
       containerID: MEETINGS_EMPTY_ID,
       containerName: MEETINGS_EMPTY_NAME,
-      content: 'Календарь не подключён\nОтправьте /google боту\n\n2x тап — Главная',
+      content: t(
+        'Календарь не подключён\nОтправьте /google боту\n\n2x тап — Главная',
+        'Calendar not connected\nSend /google to the bot\n\n2x tap — Home',
+      ),
       isEventCapture: 1,
     })
     return {
@@ -515,7 +517,10 @@ function buildMeetingsPayload(
       paddingLength: 4,
       containerID: MEETINGS_EMPTY_ID,
       containerName: MEETINGS_EMPTY_NAME,
-      content: 'Встреч сегодня и завтра нет\n\n2x тап — Главная',
+      content: t(
+        'Встреч сегодня и завтра нет\n\n2x тап — Главная',
+        'No meetings today or tomorrow\n\n2x tap — Home',
+      ),
       isEventCapture: 1,
     })
     return {
