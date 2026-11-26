@@ -241,7 +241,7 @@ export function createMsgRouter(options?: {
       } else if (media.transcribed === false) {
         compactGist = `${label} ${dur} · couldn't transcribe`
       } else {
-        compactGist = toOriginalLens(ai.gist || row.text || `${label} ${dur}`, 72)
+        compactGist = toOriginalLens(row.text || ai.gist || `${label} ${dur}`, 72)
       }
     } else {
       compactGist = toOriginalLens(row.text || '[media]', 72)
@@ -316,7 +316,7 @@ export function createMsgRouter(options?: {
       if (!draft) {
         return c.json({ error: 'invalid_draft_index' }, 400)
       }
-      replyText = draft.text
+      replyText = toOriginalLens(draft.lens || draft.text, 32) || draft.text
       selectedSlot = draft.slot ?? null
     }
 

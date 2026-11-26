@@ -70,9 +70,9 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
         gist: 'Asks for KP by 17:00',
         lang: 'ru',
         drafts: [
-          { text: 'Да, пришлю до 17:00', lens: 'Da, prishlyu do 17:00', slot: null },
-          { text: 'Можно завтра утром?', lens: 'Mozhno zavtra utrom?', slot: null },
-          { text: 'Наберу через 10 минут', lens: 'Naberu cherez 10 min', slot: null },
+          { text: 'Да, конечно, пришлю до 17:00 сегодня обязательно', lens: 'Да, пришлю до 17:00', slot: null },
+          { text: 'Можно завтра утром?', lens: 'Можно завтра утром?', slot: null },
+          { text: 'Наберу через 10 минут', lens: 'Наберу через 10 минут', slot: null },
         ],
       }),
       expiresAt: now + 86_400_000,
@@ -95,7 +95,7 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
   assert.equal(card.priority, 'urgent')
   assert.equal(card.gist, 'Привет! Пришли КП до 17:00')
   assert.equal(card.drafts.length, 3)
-  assert.equal(card.drafts[0]?.lens, 'Da, prishlyu do 17:00')
+  assert.equal(card.drafts[0]?.lens, 'Да, пришлю до 17:00')
 
   const sendRes = await app.request('/api/msg/10/send', {
     method: 'POST',
@@ -110,6 +110,8 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
 
   assert.equal(sentCalls.length, 1)
   assert.equal(sentCalls[0]?.chatId, 5005)
+  // Exact same text as shown in quick replies on glasses
+  assert.equal(sentCalls[0]?.text, card.drafts[0]?.lens)
   assert.equal(sentCalls[0]?.text, 'Да, пришлю до 17:00')
   assert.equal(sentCalls[0]?.businessConnectionId, 'bc_msg_1')
 

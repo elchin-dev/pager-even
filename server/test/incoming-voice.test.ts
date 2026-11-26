@@ -229,7 +229,7 @@ test('incoming voice, video_note, transcription failure, and tooLong media flow 
     }
     assert.equal(inboxJson1.items.length, 1)
     assert.equal(inboxJson1.items[0]?.from, 'Aziz')
-    assert.equal(inboxJson1.items[0]?.preview, '(v0:40) Move call to 17?')
+    assert.ok(inboxJson1.items[0]?.preview.startsWith('(v0:40) Привет, давай перенесём'))
     assert.equal(inboxJson1.items[0]?.urgent, true)
 
     const cardRes1 = await app.request(`/api/msg/${evt1.messageId}`, {
@@ -244,7 +244,7 @@ test('incoming voice, video_note, transcription failure, and tooLong media flow 
       drafts: Array<{ lens: string }>
     }
     assert.equal(cardJson1.from, 'Aziz')
-    assert.equal(cardJson1.gist, 'Move call to 17?')
+    assert.equal(cardJson1.gist, nextTranscript)
     assert.equal(cardJson1.transcript, nextTranscript)
     assert.deepEqual(cardJson1.media, {
       kind: 'voice',
@@ -300,7 +300,7 @@ test('incoming voice, video_note, transcription failure, and tooLong media flow 
       items: Array<{ chatId: number; preview: string }>
     }
     const vnoteItem = inboxJson2.items.find((it) => it.chatId === 8002)
-    assert.equal(vnoteItem?.preview, '(o0:15) Check layout')
+    assert.equal(vnoteItem?.preview, '(o0:15) Посмотри макет на экране')
 
     // 3) Transcription error -> transcribed=false + fallback drafts ("Will listen and reply")
     failTranscribe = true
@@ -432,6 +432,80 @@ test('incoming voice, video_note, transcription failure, and tooLong media flow 
     assert.equal(cardJson5.media?.kind, 'audio')
     assert.equal(cardJson5.media?.tooLong, true)
     assert.equal(cardJson5.gist, 'Voice 1:30 · too long to transcribe')
+
+    // 6) Incoming sticker -> readable sticker label
+    const sse6 = waitForInboxSse(1)
+    await app.request('/tg/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Bot-Api-Secret-Token': webhookSecret,
+      },
+      body: JSON.stringify({
+        update_id: 506,
+        business_message: {
+          message_id: 76,
+          date: Math.floor(now / 1000) + 5,
+          business_connection_id: 'bc_in_voice',
+          chat: { id: 8006, type: 'private', first_name: 'Rustam' },
+          from: { id: 8006, is_bot: false, first_name: 'Rustam' },
+          sticker: {
+            file_id: 'stk_1',
+            file_unique_id: 'stk_u1',
+            type: 'regular',
+            width: 512,
+            height: 512,
+            is_animated: false,
+            is_video: false,
+            emoji: '👍',
+            set_name: 'CutePack',
+          },
+        },
+      }),
+    })
+    const evt6 = await sse6
+    const cardRes6 = await app.request(`/api/msg/${evt6.messageId}`, {
+      headers: { Authorization: `Bearer ${deviceToken}` },
+    })
+    const cardJson6 = (await cardRes6.json()) as { gist: string; fullText: string }
+    assert.equal(cardJson6.gist, '[Стикер: палец вверх]')
+    assert.match(cardJson6.fullText, /Rustam: \[Стикер: палец вверх\]/)
+
+    // 7) Incoming GIF (animation) -> shown as sticker with (GIF) in parentheses
+    const sse7 = waitForInboxSse(1)
+    await app.request('/tg/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Bot-Api-Secret-Token': webhookSecret,
+      },
+      body: JSON.stringify({
+        update_id: 507,
+        business_message: {
+          message_id: 77,
+          date: Math.floor(now / 1000) + 6,
+          business_connection_id: 'bc_in_voice',
+          chat: { id: 8007, type: 'private', first_name: 'Dima' },
+          from: { id: 8007, is_bot: false, first_name: 'Dima' },
+          animation: {
+            file_id: 'gif_1',
+            file_unique_id: 'gif_u1',
+            width: 320,
+            height: 240,
+            duration: 3,
+            file_name: 'giphy.mp4',
+          },
+          caption: 'Смотри как смешно',
+        },
+      }),
+    })
+    const evt7 = await sse7
+    const cardRes7 = await app.request(`/api/msg/${evt7.messageId}`, {
+      headers: { Authorization: `Bearer ${deviceToken}` },
+    })
+    const cardJson7 = (await cardRes7.json()) as { gist: string; fullText: string }
+    assert.equal(cardJson7.gist, '[Стикер (GIF)] Смотри как смешно')
+    assert.match(cardJson7.fullText, /Dima: \[Стикер \(GIF\)\] Смотри как смешно/)
   } finally {
     sqlite.close()
   }

@@ -333,10 +333,11 @@ function formatTranscriptPageHeader(
 ): string {
   if (card.media) {
     const label = card.media.kind === 'video_note' ? 'Video' : 'Voice'
-    return clampUtf8(
-      `${label} ${formatDurationMmSs(card.media.duration)} · ${pageIndex + 1}/${totalPages}`,
-      64,
-    )
+    const dur = formatDurationMmSs(card.media.duration)
+    if (totalPages > 1) {
+      return clampUtf8(`${label} ${dur} · ${pageIndex + 1}/${totalPages} · tap: replies`, 64)
+    }
+    return clampUtf8(`${card.from} · ${label.toLowerCase()} ${dur} · tap: replies`, 64)
   }
   return clampUtf8(`${card.from} · ${pageIndex + 1}/${totalPages}`, 64)
 }
@@ -655,7 +656,7 @@ export async function startGlassesApp(): Promise<void> {
   let sendCancelled = false
   let isActionInFlight = false
 
-  let preVoiceScreen: 'card' | 'card-full' = 'card'
+  let preVoiceScreen: 'card' | 'card-full' | 'transcript-pages' = 'card'
   let recordingMode: 'hold' | 'menu' = 'hold'
   let isRecordingActive = false
   let holdReleasedEarly = false
@@ -924,10 +925,21 @@ export async function startGlassesApp(): Promise<void> {
       transcriptPages = []
       transcriptPageIndex = 0
       if (card.media) {
-        screen = 'card'
-        await bridge.rebuildPageContainer(
-          new RebuildPageContainer(buildCardPayload(card)),
-        )
+        if (card.media.transcribed && card.transcript) {
+          transcriptPages = paginateLensText(card.transcript, 180)
+          transcriptPageIndex = 0
+          screen = 'transcript-pages'
+          await bridge.rebuildPageContainer(
+            new RebuildPageContainer(
+              buildTranscriptPagePayload(card, transcriptPages, transcriptPageIndex),
+            ),
+          )
+        } else {
+          screen = 'card'
+          await bridge.rebuildPageContainer(
+            new RebuildPageContainer(buildCardPayload(card)),
+          )
+        }
       } else {
         screen = 'card-full'
         await bridge.rebuildPageContainer(
@@ -1098,7 +1110,9 @@ export async function startGlassesApp(): Promise<void> {
       await returnToInbox()
       return
     }
-    if (preVoiceScreen === 'card-full') {
+    if (preVoiceScreen === 'transcript-pages') {
+      await openTranscriptPages()
+    } else if (preVoiceScreen === 'card-full') {
       screen = 'card-full'
       await bridge.rebuildPageContainer(
         new RebuildPageContainer(buildCardFullPayload(activeCard)),
@@ -1233,7 +1247,12 @@ export async function startGlassesApp(): Promise<void> {
 
     stopSendTimer()
     stopVoiceTimers()
-    preVoiceScreen = screen === 'card-full' ? 'card-full' : 'card'
+    preVoiceScreen =
+      screen === 'transcript-pages'
+        ? 'transcript-pages'
+        : screen === 'card-full'
+          ? 'card-full'
+          : 'card'
     recordingMode = mode
     holdReleasedEarly = false
     pcmChunks = []
@@ -1457,7 +1476,10 @@ export async function startGlassesApp(): Promise<void> {
       textType === OsEventTypeList.LONG_PRESS_EVENT ||
       listType === OsEventTypeList.LONG_PRESS_EVENT
     ) {
-      if ((screen === 'card' || screen === 'card-full') && activeCard) {
+      if (
+        (screen === 'card' || screen === 'card-full' || screen === 'transcript-pages') &&
+        activeCard
+      ) {
         void startVoiceRecording('hold')
       }
       return
@@ -1500,7 +1522,7 @@ export async function startGlassesApp(): Promise<void> {
         return
       }
       if (screen === 'transcript-pages') {
-        void backFromCardFull()
+        void returnToInbox()
         return
       }
       if (screen === 'card-full') {
@@ -1508,7 +1530,9 @@ export async function startGlassesApp(): Promise<void> {
         return
       }
       if (screen === 'card') {
-        if (activeCard && !activeCard.media) {
+        if (activeCard?.media?.transcribed && activeCard.transcript) {
+          void openTranscriptPages()
+        } else if (activeCard && !activeCard.media) {
           void openCardFull()
         } else {
           void returnToInbox()
@@ -1530,7 +1554,10 @@ export async function startGlassesApp(): Promise<void> {
       if (itemId === MENU_RECORD_VOICE_ID) {
         if (screen === 'recording') {
           void stopVoiceRecording()
-        } else if ((screen === 'card' || screen === 'card-full') && activeCard) {
+        } else if (
+          (screen === 'card' || screen === 'card-full' || screen === 'transcript-pages') &&
+          activeCard
+        ) {
           void startVoiceRecording('menu')
         }
         return
@@ -1649,7 +1676,7 @@ export async function startGlassesApp(): Promise<void> {
         return
       }
 
-      if (screen === 'card-full') {
+      if (screen === 'card-full' || screen === 'transcript-pages') {
         void backFromCardFull()
         return
       }

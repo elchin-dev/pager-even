@@ -39,7 +39,7 @@ export function buildMediaFallbackTriage(media: {
     drafts: [
       { text: 'Will listen and reply', lens: 'Will listen and reply', slot: null },
       { text: 'Can you text it briefly?', lens: 'Can you text it briefly?', slot: null },
-      { text: 'In a meeting, will check soon', lens: 'In a meeting, check soon', slot: null },
+      { text: 'In a meeting, check soon', lens: 'In a meeting, check soon', slot: null },
     ],
   }
 }
@@ -95,11 +95,11 @@ Rules:
 - gist: concise action summary <= 40 chars in the sender's original language/script (e.g. "Move call to 17?" or "Перенести созвон на 17?").
 - lang: primary ISO 639-1 language code of the sender's message (e.g. "en", "ru", "uz").
 - drafts:
-  - If priority is "urgent" or "needs_reply", provide 3 distinct, natural, context-specific replies in the sender's language ("text") that directly answer what the sender asked (avoid generic filler like "Yes, sounds good" or "Will reply shortly" unless truly appropriate):
+  - If priority is "urgent" or "needs_reply", provide 3 distinct, natural, concrete, ready-to-send replies in the sender's language ("text") that directly answer what the sender asked (avoid generic filler like "Yes, sounds good" or "Will reply shortly" unless truly appropriate):
     1) Direct positive/actionable answer (e.g. confirming with specific next step or accepting the request).
     2) Specific alternative, clarifying question, or counter-offer tailored to the message.
-    3) Polite defer/busy response with a realistic timeframe (e.g. "Сейчас на встрече, отвечу через час").
-  - For every draft, "lens" must be <= 32 chars in the SAME original language/script as "text" (do NOT transliterate Russian/Cyrillic into Latin; keep Russian in Cyrillic, English in English).
+    3) Polite defer/busy response with a realistic timeframe (e.g. "На встрече, отвечу через час").
+  - CRITICAL: Every draft's "text" MUST be concise (<= 32 characters) AND "lens" MUST be 100% IDENTICAL to "text" (exact same characters, no shortening or rephrasing, same original language/script — keep Russian in Cyrillic, English in English). The exact text shown on the glasses will be sent verbatim.
   - Always set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
 
@@ -190,12 +190,13 @@ function normalizeTriageResult(
   let drafts = raw.drafts.slice(0, 3).map((d) => {
     const validSlot =
       d.slot && (allowedSlots.size === 0 || allowedSlots.has(d.slot)) ? d.slot : null
+    const exact =
+      toOriginalLens(d.lens || d.text, validSlot ? 27 : 32) ||
+      toOriginalLens(d.text, 32) ||
+      'Reply'
     return {
-      text: d.text.trim(),
-      lens:
-        toOriginalLens(d.lens || d.text, validSlot ? 27 : 32) ||
-        toOriginalLens(d.text, 32) ||
-        'Reply',
+      text: exact,
+      lens: exact,
       slot: validSlot,
     }
   })

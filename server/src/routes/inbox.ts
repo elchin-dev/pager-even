@@ -73,8 +73,8 @@ function formatInboxPreviewText(
   if (media.transcribed === false) {
     return toOriginalLens(`${prefix} couldn't transcribe`, 40)
   }
-  const summary = (ai?.gist || row.text).trim()
-  return toOriginalLens(summary ? `${prefix} ${summary}` : prefix, 40)
+  const spoken = (row.text || ai?.gist || '').trim()
+  return toOriginalLens(spoken ? `${prefix} ${spoken}` : prefix, 40)
 }
 
 function parseAiJson(raw: string | null): InboxAi | null {

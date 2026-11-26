@@ -15,6 +15,7 @@ import {
   type GoogleCalendarClient,
 } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
+import { formatGifText, formatStickerText } from '../lib/media-label.js'
 import { transcodeMediaToWav16k, type TranscodeMediaToWavFn } from '../voice/transcode.js'
 
 const MAX_INCOMING_MEDIA_BYTES = 20 * 1024 * 1024
@@ -624,7 +625,11 @@ export function createBot(
       return
     }
 
-    const messageText = msg.text ?? msg.caption ?? ''
+    const messageText = msg.sticker
+      ? formatStickerText(msg.sticker)
+      : msg.animation
+        ? formatGifText(msg.animation, msg.caption)
+        : (msg.text ?? msg.caption ?? '')
 
     const insertResult = db
       .insert(messages)
