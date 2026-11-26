@@ -73,6 +73,7 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
           { text: 'Да, конечно, пришлю до 17:00 сегодня обязательно', lens: 'Да, пришлю до 17:00', slot: null },
           { text: 'Можно завтра утром?', lens: 'Можно завтра утром?', slot: null },
           { text: 'Наберу через 10 минут', lens: 'Наберу через 10 минут', slot: null },
+          { text: 'Не смогу сегодня', lens: 'Не смогу сегодня', slot: null },
         ],
       }),
       expiresAt: now + 86_400_000,
@@ -94,8 +95,9 @@ test('GET /api/msg/:id returns card with gist and 3 lens drafts, POST /send send
   assert.equal(card.from, 'Азиз Каримов')
   assert.equal(card.priority, 'urgent')
   assert.equal(card.gist, 'Привет! Пришли КП до 17:00')
-  assert.equal(card.drafts.length, 3)
+  assert.equal(card.drafts.length, 4)
   assert.equal(card.drafts[0]?.lens, 'Да, пришлю до 17:00')
+  assert.equal(card.drafts[3]?.lens, 'Не смогу сегодня')
 
   const sendRes = await app.request('/api/msg/10/send', {
     method: 'POST',

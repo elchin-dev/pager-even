@@ -39,7 +39,6 @@ export function buildMediaFallbackTriage(media: {
     drafts: [
       { text: 'Will listen and reply', lens: 'Will listen and reply', slot: null },
       { text: 'Can you text it briefly?', lens: 'Can you text it briefly?', slot: null },
-      { text: 'In a meeting, check soon', lens: 'In a meeting, check soon', slot: null },
     ],
   }
 }
@@ -55,7 +54,7 @@ export const triageResultSchema = z.object({
   intent: z.enum(['reply', 'schedule', 'info']),
   gist: z.string().min(1).max(120),
   lang: z.string().min(1).max(16).default('en'),
-  drafts: z.array(triageDraftSchema).max(3),
+  drafts: z.array(triageDraftSchema).max(4),
 })
 
 export type TriageDraft = z.infer<typeof triageDraftSchema>
@@ -95,15 +94,14 @@ Rules:
 - gist: concise action summary <= 40 chars in the sender's original language/script (e.g. "Move call to 17?" or "Перенести созвон на 17?").
 - lang: primary ISO 639-1 language code of the sender's message (e.g. "en", "ru", "uz").
 - drafts:
-  - If priority is "urgent" or "needs_reply", provide 3 distinct, natural, concrete, ready-to-send replies in the sender's language ("text") that directly answer what the sender asked (avoid generic filler like "Yes, sounds good" or "Will reply shortly" unless truly appropriate):
-    - For yes/no, knowledge, or capability questions (e.g. "Знаешь...?", "Сможешь...?", "Есть...?", "Пойдешь...?"), ALWAYS cover both sides:
+  - Decide yourself how many replies are genuinely useful: from 1 to 4 (NEVER pad with extra options just to reach a number).
+    - Simple thanks / acknowledgement (e.g. "Спасибо!", "Thanks!"): 1 reply (e.g. "Пожалуйста!").
+    - Simple yes/no, knowledge, or capability question (e.g. "Знаешь...?", "Сможешь...?", "Есть...?", "Пойдешь...?"): 2–3 replies covering BOTH sides:
       1) Direct positive answer (e.g. "Да, знаю", "Да, смогу")
       2) Direct negative / don't-know answer (e.g. "Нет, не знаю", "Нет, не смогу")
-      3) Short clarifying question or defer (e.g. "А что там?", "Напишу позже")
-    - For other messages:
-      1) Direct positive/actionable answer.
-      2) Specific alternative, clarifying question, or counter-offer.
-      3) Polite defer/busy response with a realistic timeframe (e.g. "На встрече, отвечу через час").
+      3) Optional short clarifying question or defer (e.g. "А что там?", "Напишу позже")
+    - Complex request, scheduling, or multi-choice situation: up to 4 replies.
+  - Every reply MUST differ in meaning/action (not just rewording the same idea). Avoid generic filler unless truly appropriate.
   - CRITICAL: Every draft's "text" MUST be concise (<= 32 characters) AND "lens" MUST be 100% IDENTICAL to "text" (exact same characters, no shortening or rephrasing, same original language/script — keep Russian in Cyrillic, English in English). The exact text shown on the glasses will be sent verbatim.
   - Always set "slot" to null.
 - Output strictly raw JSON. No markdown fences, no explanations.`
@@ -147,46 +145,47 @@ export function buildFallbackTriage(input: {
     }
   }
 
-  const isPing = /^\s*(ало|алло|привет|эй|тут|на связи|hello|hi|hey|ping)\b[?!.\s]*$/iu.test(
+  const isThanks = /^\s*(спасибо|спс|благодарю|рахмат|rahmat|thanks|thank you|thx)[!.,\s]*$/iu.test(
+    input.text,
+  )
+  const isPing = /^\s*(ало|алло|привет|эй|тут|на связи|hello|hi|hey|ping)[?!.,\s]*$/iu.test(
     input.text,
   )
   const isQuestion =
-    /\?/.test(input.text) || /\b(знаешь|можешь|сможешь|есть ли|know|can you)\b/iu.test(input.text)
+    /\?/.test(input.text) || /(знаешь|можешь|сможешь|есть ли|\bknow\b|\bcan you\b)/iu.test(input.text)
   const drafts: TriageDraft[] = isCyrillic
-    ? isPing
-      ? [
-          { text: 'Да, на связи', lens: 'Да, на связи', slot: null },
-          { text: 'Слушаю, что случилось?', lens: 'Слушаю, что случилось?', slot: null },
-          { text: 'Напишу через 10 минут', lens: 'Напишу через 10 минут', slot: null },
-        ]
-      : isQuestion
+    ? isThanks
+      ? [{ text: 'Пожалуйста!', lens: 'Пожалуйста!', slot: null }]
+      : isPing
         ? [
-            { text: 'Да, конечно', lens: 'Да, конечно', slot: null },
-            { text: 'Нет, не знаю', lens: 'Нет, не знаю', slot: null },
-            { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null },
+            { text: 'Да, на связи', lens: 'Да, на связи', slot: null },
+            { text: 'Напишу чуть позже', lens: 'Напишу чуть позже', slot: null },
           ]
-        : [
-            { text: 'Да, хорошо', lens: 'Да, хорошо', slot: null },
-            { text: 'Нет, не получится', lens: 'Нет, не получится', slot: null },
-            { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null },
-          ]
-    : isPing
-      ? [
-          { text: 'Yes, I am here', lens: 'Yes, I am here', slot: null },
-          { text: 'What is up?', lens: 'What is up?', slot: null },
-          { text: 'Back in 10 min', lens: 'Back in 10 min', slot: null },
-        ]
-      : isQuestion
+        : isQuestion
+          ? [
+              { text: 'Да, конечно', lens: 'Да, конечно', slot: null },
+              { text: 'Нет, не знаю', lens: 'Нет, не знаю', slot: null },
+            ]
+          : [
+              { text: 'Ок, принято', lens: 'Ок, принято', slot: null },
+              { text: 'Отвечу чуть позже', lens: 'Отвечу чуть позже', slot: null },
+            ]
+    : isThanks
+      ? [{ text: "You're welcome!", lens: "You're welcome!", slot: null }]
+      : isPing
         ? [
-            { text: 'Yes, I do', lens: 'Yes, I do', slot: null },
-            { text: "No, I don't know", lens: "No, I don't know", slot: null },
-            { text: 'Will reply shortly', lens: 'Will reply shortly', slot: null },
+            { text: 'Yes, I am here', lens: 'Yes, I am here', slot: null },
+            { text: 'Back in 10 min', lens: 'Back in 10 min', slot: null },
           ]
-        : [
-            { text: 'Yes, sounds good', lens: 'Yes, sounds good', slot: null },
-            { text: "No, can't do that", lens: "No, can't do that", slot: null },
-            { text: 'Will reply shortly', lens: 'Will reply shortly', slot: null },
-          ]
+        : isQuestion
+          ? [
+              { text: 'Yes, sure', lens: 'Yes, sure', slot: null },
+              { text: "No, I don't know", lens: "No, I don't know", slot: null },
+            ]
+          : [
+              { text: 'Got it, thanks', lens: 'Got it, thanks', slot: null },
+              { text: 'Will reply shortly', lens: 'Will reply shortly', slot: null },
+            ]
 
   return {
     priority,
@@ -206,19 +205,24 @@ function normalizeTriageResult(
     toOriginalLens(fallbackInput.text || fallbackInput.fromName, 40) ||
     'New message'
   const allowedSlots = new Set((fallbackInput.freeSlots ?? []).map((s) => s.startIso))
-  let drafts = raw.drafts.slice(0, 3).map((d) => {
+  const seenLens = new Set<string>()
+  let drafts: TriageDraft[] = []
+  for (const d of raw.drafts.slice(0, 4)) {
     const validSlot =
       d.slot && (allowedSlots.size === 0 || allowedSlots.has(d.slot)) ? d.slot : null
     const exact =
       toOriginalLens(d.lens || d.text, validSlot ? 27 : 32) ||
       toOriginalLens(d.text, 32) ||
       'Reply'
-    return {
+    const key = exact.toLowerCase()
+    if (seenLens.has(key)) continue
+    seenLens.add(key)
+    drafts.push({
       text: exact,
       lens: exact,
       slot: validSlot,
-    }
-  })
+    })
+  }
 
   if ((raw.priority === 'urgent' || raw.priority === 'needs_reply') && drafts.length === 0) {
     drafts = buildFallbackTriage(fallbackInput).drafts

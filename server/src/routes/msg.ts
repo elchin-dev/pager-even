@@ -31,7 +31,7 @@ const idParamSchema = z.coerce.number().int().positive()
 
 const sendBodySchema = z
   .object({
-    draftIndex: z.number().int().min(0).max(2).optional(),
+    draftIndex: z.number().int().min(0).max(3).optional(),
     text: z.string().trim().min(1).max(4000).optional(),
     createEvent: z.boolean().optional(),
   })
@@ -183,7 +183,7 @@ export function createMsgRouter(options?: {
       media,
     })
 
-    const drafts = ai.drafts.slice(0, 3).map((d, index) => ({
+    const drafts = ai.drafts.slice(0, 4).map((d, index) => ({
       index,
       lens: toOriginalLens(d.lens || d.text, 32) || 'Reply',
       slot: null,

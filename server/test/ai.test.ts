@@ -130,7 +130,53 @@ test('triageMessage normalizes gist <= 40 and draft.lens <= 32, and falls back w
   assert.equal(fallback.usedFallback, true)
   assert.equal(fallback.result.priority, 'needs_reply')
   assert.equal(fallback.result.lang, 'ru')
-  assert.equal(fallback.result.drafts.length, 3)
+  assert.ok(fallback.result.drafts.length >= 1 && fallback.result.drafts.length <= 2)
+
+  const thanksFallback = await triageMessage(
+    {
+      fromName: 'Aziz',
+      text: 'Спасибо!',
+      recentMessages: [],
+      tz: 'Asia/Tashkent',
+    },
+    null,
+  )
+  assert.equal(thanksFallback.usedFallback, true)
+  assert.equal(thanksFallback.result.drafts.length, 1)
+  assert.equal(thanksFallback.result.drafts[0]?.lens, 'Пожалуйста!')
+
+  const fourDraftProvider: LlmProvider = {
+    id: 'gemini',
+    model: 'mock',
+    async completeJson() {
+      return {
+        priority: 'needs_reply',
+        intent: 'reply',
+        gist: 'Сложная просьба по проекту',
+        lang: 'ru',
+        drafts: [
+          { text: 'Да, сделаю сегодня', lens: 'Да, сделаю сегодня', slot: null },
+          { text: 'Могу завтра утром', lens: 'Могу завтра утром', slot: null },
+          { text: 'Нужны детали по ТЗ', lens: 'Нужны детали по ТЗ', slot: null },
+          { text: 'Не успею, давай позже', lens: 'Не успею, давай позже', slot: null },
+        ],
+      } as never
+    },
+  }
+  const fourRes = await triageMessage(
+    {
+      fromName: 'Client',
+      text: 'Нужно переделать макет и смету до вечера',
+      recentMessages: [],
+      tz: 'Asia/Tashkent',
+    },
+    fourDraftProvider,
+  )
+  assert.equal(fourRes.result.drafts.length, 4)
+  for (const d of fourRes.result.drafts) {
+    assert.equal(d.text, d.lens)
+    assert.ok(d.lens.length <= 32)
+  }
 
   const scheduleFallback = await triageMessage(
     {

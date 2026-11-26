@@ -773,7 +773,7 @@ function buildCardPayload(card: MessageCard): {
     isEventCapture: 0,
   })
 
-  const draftItems = card.drafts.slice(0, 3).map((draft) => clampUtf8(draft.lens, 63))
+  const draftItems = card.drafts.slice(0, 4).map((draft) => clampUtf8(draft.lens, 63))
   draftItems.push('Пропустить')
   const drafts = new ListContainerProperty({
     xPosition: 0,
