@@ -646,6 +646,7 @@ export async function startGlassesApp(): Promise<void> {
   let inboxCounts: InboxCounts = { urgent: 0, all: 0 }
   let selectedIndex = 0
   let lastInboxRebuildAt = 0
+  let lastInboxSignature = ''
   let pendingInboxTimer: number | null = null
   let fallbackPollTimer: number | null = null
   let isRefreshingInbox = false
@@ -755,14 +756,23 @@ export async function startGlassesApp(): Promise<void> {
     void beginPairingFlow()
   }
 
-  async function refreshInboxNow(): Promise<void> {
+  async function refreshInboxNow(
+    prefetched?: Promise<import('../lib/api').InboxResponse>,
+    forceRebuild = false,
+  ): Promise<void> {
     if (disposed || (screen !== 'inbox' && screen !== 'inbox-error') || isRefreshingInbox) {
       return
     }
     isRefreshingInbox = true
     try {
-      const data = await fetchInbox(bridge)
+      const data = await (prefetched ?? fetchInbox(bridge))
       if (disposed || (screen !== 'inbox' && screen !== 'inbox-error')) return
+      const nextSig = JSON.stringify({
+        counts: data.counts,
+        items: data.items.map((it) => [it.id, it.preview, it.urgent, it.count]),
+      })
+      const shouldRebuild =
+        forceRebuild || screen === 'inbox-error' || nextSig !== lastInboxSignature
       screen = 'inbox'
       feedMode = data.mode
       chatView = data.chatView
@@ -773,13 +783,18 @@ export async function startGlassesApp(): Promise<void> {
       }
       lastInboxRebuildAt = Date.now()
       renderPhoneInbox(inboxItems.length)
-      const rebuilt = await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildInboxPayload(inboxItems, feedMode, inboxCounts)),
-      )
-      if (!rebuilt) {
-        console.warn('[inbox] rebuildPageContainer returned false', { count: inboxItems.length })
+      if (shouldRebuild) {
+        lastInboxSignature = nextSig
+        const rebuilt = await bridge.rebuildPageContainer(
+          new RebuildPageContainer(buildInboxPayload(inboxItems, feedMode, inboxCounts)),
+        )
+        if (!rebuilt) {
+          lastInboxSignature = ''
+          console.warn('[inbox] rebuildPageContainer returned false', { count: inboxItems.length })
+        }
       }
     } catch (err) {
+      lastInboxSignature = ''
       if (err instanceof UnauthorizedError) {
         await handleUnauthorized()
       } else {
@@ -863,24 +878,20 @@ export async function startGlassesApp(): Promise<void> {
   async function enterInbox(isStartup: boolean): Promise<void> {
     stopPolling()
     screen = 'inbox'
+    lastInboxSignature = ''
     renderPhoneInbox(0)
 
+    const initialFetch = fetchInbox(bridge)
     if (isStartup) {
       await bridge.createStartUpPageContainer(
         new CreateStartUpPageContainer(
           buildInboxPayload([], feedMode, inboxCounts, 'Loading…'),
         ),
       )
-    } else {
-      await bridge.rebuildPageContainer(
-        new RebuildPageContainer(
-          buildInboxPayload([], feedMode, inboxCounts, 'Loading…'),
-        ),
-      )
     }
 
     lastInboxRebuildAt = Date.now()
-    await refreshInboxNow()
+    await refreshInboxNow(initialFetch, true)
     if (!disposed && screen === 'inbox') {
       startSseSubscription()
     }
@@ -892,7 +903,8 @@ export async function startGlassesApp(): Promise<void> {
     activeCard = null
     cardDraftIndex = 0
     screen = 'inbox'
-    await refreshInboxNow()
+    lastInboxSignature = ''
+    await refreshInboxNow(undefined, true)
   }
 
   async function applySettingsPatch(patch: {

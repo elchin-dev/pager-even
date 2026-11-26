@@ -133,6 +133,7 @@ export async function apiFetch(
   bridge: EvenAppBridge,
   path: string,
   init: RequestInit = {},
+  timeoutMs = 8000,
 ): Promise<Response> {
   const token = await getStoredDeviceToken(bridge)
   const headers = new Headers(init.headers)
@@ -145,6 +146,7 @@ export async function apiFetch(
   return fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers,
+    signal: init.signal ?? AbortSignal.timeout(timeoutMs),
   })
 }
 
@@ -211,11 +213,16 @@ export async function sendVoiceReply(
   const copy = new Uint8Array(wavBytes.byteLength)
   copy.set(wavBytes)
   const blob = new Blob([copy.buffer], { type: 'audio/wav' })
-  const res = await apiFetch(bridge, `/api/msg/${id}/voice`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'audio/wav' },
-    body: blob,
-  })
+  const res = await apiFetch(
+    bridge,
+    `/api/msg/${id}/voice`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'audio/wav' },
+      body: blob,
+    },
+    25_000,
+  )
   return parseJson<{ ok: true; tgMessageId: number; durationSec: number }>(res)
 }
 
