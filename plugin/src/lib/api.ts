@@ -3,7 +3,7 @@ import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 const DEVICE_TOKEN_KEY = 'pager_device_token'
 
 export const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8787'
+  import.meta.env?.VITE_API_BASE_URL || 'http://localhost:8787'
 ).replace(/\/+$/, '')
 
 export class UnauthorizedError extends Error {

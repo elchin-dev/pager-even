@@ -17,6 +17,7 @@ import {
 import { subscribeUserEvents, type UserEvent } from '../src/lib/events.js'
 import type { CalendarEventItem, GoogleCalendarClient } from '../src/lib/google-calendar.js'
 import { findRelevantNotes, runTaskAndPromiseReminderTick } from '../src/lib/notes-service.js'
+import { parseProposedMeetingTime } from '../src/lib/time-parser.js'
 import { createMeetingsRouter } from '../src/routes/meetings.js'
 import { createMsgRouter } from '../src/routes/msg.js'
 import { createNotesRouter, createPromisesRouter } from '../src/routes/notes.js'
@@ -455,6 +456,15 @@ test('Prompt 6 & 7: deterministic busy conflict alert + free slot first draft + 
     assert.equal(createdEvents.length, 1)
     assert.match(createdEvents[0]!.description ?? '', /Показать демо/)
     assert.match(createdEvents[0]!.description ?? '', /Дильноза ждёт оценку/)
+
+    // Lunch time ("во время обеда") resolves to 13:00-14:00
+    const lunch = parseProposedMeetingTime(
+      'Я свободен ли во время обеда?',
+      Date.parse('2026-11-26T05:00:00.000Z'), // 10:00 Tashkent
+      'Asia/Tashkent',
+    )
+    assert.ok(lunch)
+    assert.equal(lunch.displayWhen, 'Сегодня 13:00-14:00')
   } finally {
     sqlite.close()
   }

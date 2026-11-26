@@ -1060,9 +1060,6 @@ function buildCardPayload(card: MessageCard): {
   })
 
   const draftItems = card.drafts.slice(0, 4).map((draft) => clampUtf8(draft.lens, 63))
-  if (card.proposedMeeting) {
-    draftItems.push('Создать встречу')
-  }
   draftItems.push('Пропустить')
   const drafts = new ListContainerProperty({
     xPosition: 0,
@@ -1271,8 +1268,8 @@ function buildSendingPayload(
   }
 }
 
-export async function startGlassesApp(): Promise<void> {
-  const bridge: EvenAppBridge = await waitForEvenAppBridge()
+export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<void> {
+  const bridge: EvenAppBridge = overrideBridge ?? (await waitForEvenAppBridge())
 
   let screen: AppScreen = 'pairing'
   let pollTimer: number | null = null
@@ -1636,6 +1633,7 @@ export async function startGlassesApp(): Promise<void> {
     resetVoiceState(true)
     activeCard = null
     cardDraftIndex = 0
+    homeSelectedIndex = 0
     screen = 'home'
     lastHomeSignature = ''
     await refreshHomeNow(undefined, true)
@@ -3643,10 +3641,6 @@ export async function startGlassesApp(): Promise<void> {
           cardDraftIndex = event.listEvent.currentSelectItemIndex
         }
         const draftsCount = Math.min(4, activeCard.drafts.length)
-        if (activeCard.proposedMeeting && cardDraftIndex === draftsCount) {
-          void openNewMeetingScreen(activeCard.proposedMeeting, activeCard.chatId)
-          return
-        }
         if (cardDraftIndex >= draftsCount) {
           void skipActiveCard()
           return

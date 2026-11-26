@@ -465,9 +465,9 @@ export function createMsgRouter(options?: {
 
     const extras = parseStoredExtras(row.aiJson)
     const isAffirmativeReply =
-      /^\s*(да|ок|окей|хорошо|добро|давай|соглас|буду|смогу|подключ|подойдет|подойдёт|yes|sure|ok|okay|sounds good|let's)(?![\p{L}\p{N}])/iu.test(
+      /^\s*(да|ок|окей|хорошо|добро|давай|соглас|буду|смогу|свобод|подключ|подойдет|подойдёт|yes|sure|ok|okay|sounds good|let's)(?![\p{L}\p{N}])/iu.test(
         replyText,
-      ) || /(да,\s*давай|давай\s+в)/iu.test(replyText)
+      ) || /(да,\s*давай|давай\s+в|да,\s*свобод)/iu.test(replyText)
     const suggestCreateMeeting = Boolean(
       !promiseSuggestion && extras.proposedMeeting && isAffirmativeReply,
     )

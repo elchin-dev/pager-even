@@ -293,11 +293,15 @@ export function parseProposedMeetingTime(
   tz: string,
 ): ProposedMeetingTime | null {
   const lower = text.toLowerCase()
-  const hasMeetingCue =
-    /(созвон|звонок|встрет|встреч|митинг|синк|зум|zoom|meet|call|sync|кофе|обсуд|слот|удобно|сможешь)/iu.test(
+  const isLunchMention =
+    /(?<![\p{L}\p{N}])(во время обеда|в обед|на обед|в обеденное время)(?![\p{L}\p{N}])/iu.test(
       lower,
     )
-  if (!hasMeetingCue) return null
+  const hasMeetingCue =
+    /(созвон|звонок|встрет|встреч|митинг|синк|зум|zoom|meet|call|sync|кофе|обсуд|слот|удобно|сможешь|свобод)/iu.test(
+      lower,
+    )
+  if (!hasMeetingCue && !isLunchMention) return null
 
   const isTomorrow = /(?<![\p{L}\p{N}])(завтра|tomorrow)(?![\p{L}\p{N}])/iu.test(lower)
   const isAfterTomorrow = /(?<![\p{L}\p{N}])послезавтра(?![\p{L}\p{N}])/iu.test(lower)
@@ -307,20 +311,30 @@ export function parseProposedMeetingTime(
     lower.match(/(?<![\p{L}\p{N}])(?:в|на|at|к)\s*(\d{1,2})(?:[:.](\d{2}))?(?![\p{L}\p{N}])/iu) ??
     lower.match(/(?<![\p{N}])(\d{1,2})[:.](\d{2})(?![\p{N}])/u)
 
-  if (!timeMatch) return null
+  let hour: number
+  let minute: number
+  let durationMinutes = 30
 
-  let hour = Number(timeMatch[1])
-  const minute = timeMatch[2] ? Number(timeMatch[2]) : 0
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
-  if (/вечер|дня/iu.test(lower) && hour >= 1 && hour <= 7) {
-    hour += 12
+  if (timeMatch) {
+    hour = Number(timeMatch[1])
+    minute = timeMatch[2] ? Number(timeMatch[2]) : 0
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
+    if (/вечер|дня/iu.test(lower) && hour >= 1 && hour <= 7) {
+      hour += 12
+    }
+  } else if (isLunchMention) {
+    hour = 13
+    minute = 0
+    durationMinutes = 60
+  } else {
+    return null
   }
 
   let startMs = localClockToEpochMs(nowMs, tz, dayOffset, hour, minute)
   if (dayOffset === 0 && startMs <= nowMs - 15 * 60_000) {
     startMs = localClockToEpochMs(nowMs, tz, 1, hour, minute)
   }
-  const endMs = startMs + 30 * 60_000
+  const endMs = startMs + durationMinutes * 60_000
 
   const todayKey = getLocalDateKey(nowMs, tz)
   const tomorrowKey = getLocalDateKey(nowMs + 24 * 60 * 60 * 1000, tz)
