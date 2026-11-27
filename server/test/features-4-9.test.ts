@@ -645,6 +645,72 @@ test('Prompt 8 & 9: public t.me/s/<channel> digest scraper, 30m rate limit, Home
     })
     assert.match(preflight.headers.get('access-control-allow-methods') ?? '', /DELETE/)
 
+    // Sticker/GIF descriptions follow user uiLang setting ('en' vs 'ru')
+    await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uiLang: 'en' }),
+    })
+    const describedLangs: string[] = []
+    const stickerBot = createBot('123456:TEST', {
+      db,
+      botConfig: { botInfo: TEST_BOT_INFO },
+      getProvider: () => ({
+        id: 'gemini',
+        model: 'mock',
+        async completeJson(opts) {
+          return opts.schema.parse({
+            priority: 'fyi',
+            intent: 'info',
+            gist: 'Sticker: waving bear',
+            lang: 'en',
+            drafts: [{ text: '👋', lens: '👋', slot: null }],
+          })
+        },
+        async describeImage(_buf, _mime, _kind, lang) {
+          describedLangs.push(lang ?? 'unset')
+          return 'waving bear'
+        },
+      }),
+      downloadTelegramFile: async () => Buffer.from([1, 2, 3]),
+      nowProvider: () => nowMs,
+    })
+    const stickerApp = createApp({ db, tg: { bot: stickerBot, webhookSecret: 'sec_sticker' } })
+    await stickerApp.request('/tg/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Bot-Api-Secret-Token': 'sec_sticker',
+      },
+      body: JSON.stringify({
+        update_id: 950,
+        business_message: {
+          message_id: 95,
+          date: Math.floor(nowMs / 1000),
+          business_connection_id: 'bc_p89',
+          chat: { id: 8801, type: 'private', first_name: 'Bob' },
+          from: { id: 8801, is_bot: false, first_name: 'Bob' },
+          sticker: {
+            file_id: 'st_1',
+            file_unique_id: 'stu_1',
+            type: 'regular',
+            width: 512,
+            height: 512,
+            is_animated: false,
+            is_video: false,
+            emoji: '🐻',
+          },
+        },
+      }),
+    })
+    assert.deepEqual(describedLangs, ['en'])
+    const storedSticker = db
+      .select({ text: messages.text })
+      .from(messages)
+      .where(eq(messages.chatId, 8801))
+      .get()
+    assert.equal(storedSticker?.text, '[Sticker 🐻: waving bear]')
+
     // Bot management views (/settings, /notes, /channels) include inline buttons
     db.insert(notes)
       .values({

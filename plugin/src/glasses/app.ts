@@ -30,6 +30,7 @@ import {
   fetchMeetings,
   fetchMessageCard,
   fetchNotes,
+  fetchSettings,
   getPairingStatus,
   getStoredDeviceToken,
   prepareMeetingBriefVoice,
@@ -45,6 +46,7 @@ import {
   subscribeInboxStream,
   transcribeNoteVoice,
   updateNote,
+  updateSettings,
   type DigestListItem,
   type DigestPostDetail,
   type FeedMode,
@@ -628,9 +630,9 @@ function buildMeetingCardPayload(brief: MeetingBrief): {
   menuObject: MenuContainerProperty
 } {
   const timeSuffix = brief.isTomorrow
-    ? ' · завтра'
+    ? t(' · завтра', ' · tomorrow')
     : brief.minutesUntil !== null && brief.minutesUntil < 60
-      ? ` · через ${brief.minutesUntil} мин`
+      ? t(` · через ${brief.minutesUntil} мин`, ` · in ${brief.minutesUntil} min`)
       : ''
   const header = new TextContainerProperty({
     xPosition: 0,
@@ -1254,6 +1256,8 @@ function buildVoiceConfirmPayload(
   listObject: ListContainerProperty[]
   menuObject: MenuContainerProperty
 } {
+  const kindLabel =
+    kind === 'short' ? t('короткое', 'short') : t('длинное', 'long')
   const header = new TextContainerProperty({
     xPosition: 0,
     yPosition: 0,
@@ -1264,7 +1268,10 @@ function buildVoiceConfirmPayload(
     paddingLength: 4,
     containerID: VOICE_HEADER_ID,
     containerName: VOICE_HEADER_NAME,
-    content: `Voice ${formatDurationMmSs(durationSec)} · ${kind}`,
+    content: clampUtf8(
+      `${t('Голос', 'Voice')} ${formatDurationMmSs(durationSec)} · ${kindLabel}`,
+      63,
+    ),
     isEventCapture: 0,
   })
 
@@ -1283,7 +1290,7 @@ function buildVoiceConfirmPayload(
       itemCount: 2,
       itemWidth: 560,
       isItemSelectBorderEn: 1,
-      itemName: ['Send', 'Discard'],
+      itemName: [t('Отправить', 'Send'), t('Отмена', 'Discard')],
     }),
   })
 
@@ -1314,11 +1321,11 @@ function buildSendingPayload(
     paddingLength: 4,
     containerID: SENDING_HEADER_ID,
     containerName: SENDING_HEADER_NAME,
-    content: `Sending in ${secondsLeft}s…`,
+    content: t(`Отправка через ${secondsLeft}с…`, `Sending in ${secondsLeft}s…`),
     isEventCapture: 0,
   })
 
-  const calLine = hasCal ? '\n+ Calendar event' : ''
+  const calLine = hasCal ? `\n+ ${t('Встреча в календаре', 'Calendar event')}` : ''
   const body = new TextContainerProperty({
     xPosition: 0,
     yPosition: 46,
@@ -1329,7 +1336,7 @@ function buildSendingPayload(
     paddingLength: 4,
     containerID: SENDING_BODY_ID,
     containerName: SENDING_BODY_NAME,
-    content: `${draftLens}${calLine}\n\n2x tap to cancel`,
+    content: `${draftLens}${calLine}\n\n${t('2x тап — отмена', '2x tap to cancel')}`,
     isEventCapture: 1,
   })
 
@@ -1641,7 +1648,9 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
           void refreshHomeNow(undefined, true)
         })
         await bridge.rebuildPageContainer(
-          new RebuildPageContainer(buildHomePayload(null, `Ошибка: ${msg}\nТап — повторить`)),
+          new RebuildPageContainer(
+            buildHomePayload(null, `${t('Ошибка', 'Error')}: ${msg}\n${t('Тап — повторить', 'Tap — retry')}`),
+          ),
         )
       }
     } finally {
@@ -1689,7 +1698,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     const initialFetch = fetchHome(bridge)
     if (isStartup) {
       await bridge.createStartUpPageContainer(
-        new CreateStartUpPageContainer(buildHomePayload(null, 'Загрузка…')),
+        new CreateStartUpPageContainer(buildHomePayload(null, t('Загрузка…', 'Loading…'))),
       )
     }
 
@@ -1729,10 +1738,13 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
       if (err instanceof UnauthorizedError) {
         await handleUnauthorized()
       } else {
-        const msg = err instanceof Error ? err.message : 'Ошибка загрузки'
+        const msg = err instanceof Error ? err.message : t('Ошибка загрузки', 'Load error')
         await bridge.rebuildPageContainer(
           new RebuildPageContainer(
-            buildMeetingsPayload(null, `Ошибка: ${msg}\n\n2x тап — Главная`),
+            buildMeetingsPayload(
+              null,
+              `${t('Ошибка', 'Error')}: ${msg}\n\n${t('2x тап — Главная', '2x tap — Home')}`,
+            ),
           ),
         )
       }
@@ -1805,7 +1817,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     const previewLine =
       action === 'reschedule'
         ? `${brief.title}\n${brief.reschedulePreview}`
-        : `${brief.lateRecipientName ?? 'Участнику'}:\nОпаздываю на 5 мин`
+        : `${brief.lateRecipientName ?? t('Участнику', 'Attendee')}:\n${t('Опаздываю на 5 мин', 'Running 5 min late')}`
 
     await bridge.rebuildPageContainer(
       new RebuildPageContainer({
@@ -1821,7 +1833,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
             paddingLength: 4,
             containerID: SENDING_HEADER_ID,
             containerName: SENDING_HEADER_NAME,
-            content: `Выполняю через ${secondsLeft}с…`,
+            content: t(`Выполняю через ${secondsLeft}с…`, `Running in ${secondsLeft}s…`),
             isEventCapture: 0,
           }),
           new TextContainerProperty({
@@ -1834,7 +1846,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
             paddingLength: 4,
             containerID: SENDING_BODY_ID,
             containerName: SENDING_BODY_NAME,
-            content: `${previewLine}\n\n2x тап — отмена`,
+            content: `${previewLine}\n\n${t('2x тап — отмена', '2x tap — cancel')}`,
             isEventCapture: 1,
           }),
         ],
@@ -1855,7 +1867,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
           new TextContainerUpgrade({
             containerID: SENDING_HEADER_ID,
             containerName: SENDING_HEADER_NAME,
-            content: `Выполняю через ${secondsLeft}с…`,
+            content: t(`Выполняю через ${secondsLeft}с…`, `Running in ${secondsLeft}s…`),
           }),
         )
         return
@@ -1965,9 +1977,9 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
         await bridge.rebuildPageContainer(
           new RebuildPageContainer(
             buildGenericListPagePayload({
-              headerText: 'Мои заметки',
+              headerText: t('Мои заметки', 'My notes'),
               items: [],
-              emptyText: 'Ошибка загрузки\n\n2x тап — назад',
+              emptyText: t('Ошибка загрузки\n\n2x тап — назад', 'Load error\n\n2x tap — back'),
             }),
           ),
         )
@@ -2020,16 +2032,16 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     noteReviewActionIndex = 0
     const lines = [noteDraftAnalysis.transcript]
     if (noteDraftAnalysis.taskReminder) {
-      lines.push(`Напоминание: ${noteDraftAnalysis.taskReminder.label}`)
+      lines.push(`${t('Напоминание', 'Reminder')}: ${noteDraftAnalysis.taskReminder.label}`)
     }
     if (noteDraftBindMeeting) {
-      lines.push(`Встреча: ${noteDraftBindMeeting.label}`)
+      lines.push(`${t('Встреча', 'Meeting')}: ${noteDraftBindMeeting.label}`)
     }
     const actions = getNoteReviewActions()
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
         buildGenericThreePartPayload({
-          headerText: 'Новая заметка',
+          headerText: t('Новая заметка', 'New note'),
           bodyText: lines.join('\n'),
           items: actions.map((a) => a.label),
         }),
@@ -2043,8 +2055,8 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     noteDetailActionIndex = 0
     screen = 'note-detail'
     const meta: string[] = []
-    if (note.meetingTitle) meta.push(`Встреча: ${note.meetingTitle}`)
-    if (note.remindTime && !note.taskCompleted) meta.push(`Напоминание: ${note.remindTime}`)
+    if (note.meetingTitle) meta.push(`${t('Встреча', 'Meeting')}: ${note.meetingTitle}`)
+    if (note.remindTime && !note.taskCompleted) meta.push(`${t('Напоминание', 'Reminder')}: ${note.remindTime}`)
     const bodyText = meta.length > 0 ? `${note.text}\n${meta.join(' · ')}` : note.text
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
@@ -2078,13 +2090,13 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
       title: `${ev.title} ${ev.startTime}`,
       label: `${ev.startTime} ${ev.title}`,
     }))
-    bindMeetingChoices.push({ eventId: null, title: null, label: 'Без встречи' })
+    bindMeetingChoices.push({ eventId: null, title: null, label: t('Без встречи', 'No meeting') })
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
         buildGenericListPagePayload({
-          headerText: 'Привязать к встрече',
+          headerText: t('Привязать к встрече', 'Link to meeting'),
           items: bindMeetingChoices.map((c) => c.label),
-          emptyText: 'Встреч не найдено',
+          emptyText: t('Встреч не найдено', 'No meetings found'),
         }),
       ),
     )
@@ -2151,7 +2163,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
         buildGenericThreePartPayload({
           headerText: suggestion.headerSentTo,
           bodyText: `${suggestion.replyText}\n${suggestion.promptQuestion}`,
-          items: [suggestion.defaultOption.label, 'Другое время', 'Не надо'],
+          items: [suggestion.defaultOption.label, t('Другое время', 'Other time'), t('Не надо', 'No thanks')],
         }),
       ),
     )
@@ -2167,9 +2179,9 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
           headerText: activePromiseSuggestion.promptQuestion,
           items: [
             ...activePromiseSuggestion.altOptions.map((o) => o.label),
-            'Отмена',
+            t('Отмена', 'Cancel'),
           ],
-          emptyText: 'Отмена',
+          emptyText: t('Отмена', 'Cancel'),
         }),
       ),
     )
@@ -2236,9 +2248,9 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
         buildGenericListPagePayload({
-          headerText: 'Другое время',
+          headerText: t('Другое время', 'Other time'),
           items: activeProposedMeeting.altSlots.map((s) => s.displayWhen),
-          emptyText: 'Свободных слотов рядом нет',
+          emptyText: t('Свободных слотов рядом нет', 'No free slots nearby'),
         }),
       ),
     )
@@ -2248,13 +2260,13 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     if (disposed || !preparedBrief) return
     briefReviewActionIndex = 0
     screen = 'meeting-brief-review'
-    const aiLine = preparedBrief.aiAdded ? `\nИИ добавил: ${preparedBrief.aiAdded}` : ''
+    const aiLine = preparedBrief.aiAdded ? `\n${t('ИИ добавил', 'AI added')}: ${preparedBrief.aiAdded}` : ''
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
         buildGenericThreePartPayload({
-          headerText: 'Бриф встречи',
-          bodyText: `Ты: ${preparedBrief.userSaid}${aiLine}`,
-          items: ['Сохранить', 'Дописать голосом'],
+          headerText: t('Бриф встречи', 'Meeting brief'),
+          bodyText: `${t('Ты', 'You')}: ${preparedBrief.userSaid}${aiLine}`,
+          items: [t('Сохранить', 'Save'), t('Дописать голосом', 'Append voice')],
         }),
       ),
     )
@@ -2271,8 +2283,8 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
         buildVoiceStatusPayload(
-          `Создание через ${secondsLeft}с…`,
-          `${pm.title}\n${pm.displayWhen}\n\n2x тап — отмена`,
+          t(`Создание через ${secondsLeft}с…`, `Creating in ${secondsLeft}s…`),
+          `${pm.title}\n${pm.displayWhen}\n\n${t('2x тап — отмена', '2x tap — cancel')}`,
         ),
       ),
     )
@@ -2288,7 +2300,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
           new TextContainerUpgrade({
             containerID: VOICE_HEADER_ID,
             containerName: VOICE_HEADER_NAME,
-            content: `Создание через ${secondsLeft}с…`,
+            content: t(`Создание через ${secondsLeft}с…`, `Creating in ${secondsLeft}s…`),
           }),
         )
         return
@@ -2320,9 +2332,12 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
       await bridge.rebuildPageContainer(
         new RebuildPageContainer(
           buildGenericListPagePayload({
-            headerText: `Дайджест · ${digestItems.length}`,
+            headerText: `${t('Дайджест', 'Digest')} · ${digestItems.length}`,
             items: digestItems.map((it) => `${it.channel}  ${it.gist}`),
-            emptyText: 'Новых постов за 48 ч нет\n\n2x тап — Главная',
+            emptyText: t(
+              'Новых постов сегодня нет\n\n2x тап — Главная',
+              'No new posts today\n\n2x tap — Home',
+            ),
           }),
         ),
       )
@@ -2333,9 +2348,12 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
         await bridge.rebuildPageContainer(
           new RebuildPageContainer(
             buildGenericListPagePayload({
-              headerText: 'Дайджест',
+              headerText: t('Дайджест', 'Digest'),
               items: [],
-              emptyText: 'Ошибка загрузки дайджеста\n\n2x тап — Главная',
+              emptyText: t(
+                'Ошибка загрузки дайджеста\n\n2x тап — Главная',
+                'Digest load error\n\n2x tap — Home',
+              ),
             }),
           ),
         )
@@ -2702,7 +2720,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
           new TextContainerUpgrade({
             containerID: SENDING_HEADER_ID,
             containerName: SENDING_HEADER_NAME,
-            content: `Sending in ${secondsLeft}s…`,
+            content: t(`Отправка через ${secondsLeft}с…`, `Sending in ${secondsLeft}s…`),
           }),
         )
         return
@@ -2768,11 +2786,15 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
   function formatRecordingHeader(elapsedSec: number, mode: 'hold' | 'menu'): string {
     const dur = formatDurationMmSs(elapsedSec)
     if (recordingPurpose === 'new-note' || recordingPurpose === 'append-note' || recordingPurpose === 'meeting-brief') {
-      const hint = mode === 'hold' ? 'отпусти, чтобы закончить' : 'тап — стоп'
-      return clampUtf8(`● ${dur} · Говори… ${hint}`, 63)
+      const hint = mode === 'hold'
+        ? t('отпусти — стоп', 'release to stop')
+        : t('тап — стоп', 'tap to stop')
+      return clampUtf8(`● ${dur} · ${t('Говори…', 'Speak…')} ${hint}`, 63)
     }
-    const stopHint = mode === 'hold' ? 'release to stop' : 'tap to stop'
-    return `● REC ${dur} · ${stopHint}`
+    const stopHint = mode === 'hold'
+      ? t('отпусти — стоп', 'release to stop')
+      : t('тап — стоп', 'tap to stop')
+    return clampUtf8(`● ${t('ЗАП', 'REC')} ${dur} · ${stopHint}`, 63)
   }
 
   async function executeVoiceSend(): Promise<void> {
@@ -2794,8 +2816,8 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
           await bridge.rebuildPageContainer(
             new RebuildPageContainer(
               buildVoiceStatusPayload(
-                'Voice not sent · tap retry',
-                'Tap to retry · 2×tap discard',
+                t('Голос не отправлен · тап', 'Voice not sent · tap retry'),
+                t('Тап — повтор · 2×тап отмена', 'Tap retry · 2×tap discard'),
               ),
             ),
           )
@@ -2814,7 +2836,13 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     let secondsLeft: number = VOICE_CONFIG.undoWindowSec
 
     const formatVoiceSendingLine = (secLeft: number) =>
-      `Voice ${formatDurationMmSs(durationSec)} · sending in ${secLeft} · 2×tap cancel`
+      clampUtf8(
+        t(
+          `Голос ${formatDurationMmSs(durationSec)} · отправка ${secLeft}с`,
+          `Voice ${formatDurationMmSs(durationSec)} · sending ${secLeft}s`,
+        ),
+        63,
+      )
 
     await bridge.rebuildPageContainer(
       new RebuildPageContainer({
@@ -2830,7 +2858,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
             paddingLength: 4,
             containerID: SENDING_HEADER_ID,
             containerName: SENDING_HEADER_NAME,
-            content: formatVoiceSendingLine(secondsLeft).slice(0, 64),
+            content: formatVoiceSendingLine(secondsLeft),
             isEventCapture: 0,
           }),
           new TextContainerProperty({
@@ -2843,7 +2871,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
             paddingLength: 4,
             containerID: SENDING_BODY_ID,
             containerName: SENDING_BODY_NAME,
-            content: '2×tap cancel',
+            content: t('2×тап — отмена', '2×tap cancel'),
             isEventCapture: 1,
           }),
         ],
@@ -2921,7 +2949,10 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
       screen = 'voice-error'
       await bridge.rebuildPageContainer(
         new RebuildPageContainer(
-          buildVoiceStatusPayload('Микрофон недоступен', '2×тап — назад'),
+          buildVoiceStatusPayload(
+            t('Микрофон недоступен', 'Mic unavailable'),
+            t('2×тап — назад', '2×tap — back'),
+          ),
         ),
       )
       return
@@ -2933,13 +2964,9 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     }
 
     const bodyHint =
-      purpose === 'chat-voice'
-        ? mode === 'hold'
-          ? 'Release to finish recording'
-          : 'Tap to finish recording'
-        : mode === 'hold'
-          ? 'Говори… отпусти, чтобы закончить'
-          : 'Говори… тап, чтобы закончить'
+      mode === 'hold'
+        ? t('Говори… отпусти, чтобы закончить', 'Speak… release to finish')
+        : t('Говори… тап, чтобы закончить', 'Speak… tap to finish')
 
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
@@ -2994,7 +3021,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
       pendingWav = null
       screen = 'voice-too-short'
       await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildVoiceStatusPayload('Слишком коротко', '')),
+        new RebuildPageContainer(buildVoiceStatusPayload(t('Слишком коротко', 'Too short'), '')),
       )
       voiceShortDismissTimer = window.setTimeout(() => {
         voiceShortDismissTimer = null
@@ -3006,7 +3033,9 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     // STT allowed ONLY for notes and meeting brief (Prompts 4 & 6)
     if (recordingPurpose === 'new-note') {
       await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildVoiceStatusPayload('Расшифровка…', 'Подождите…')),
+        new RebuildPageContainer(
+          buildVoiceStatusPayload(t('Расшифровка…', 'Transcribing…'), t('Подождите…', 'Please wait…')),
+        ),
       )
       try {
         noteDraftAnalysis = await transcribeNoteVoice(bridge, encoded.wavBytes)
@@ -3016,7 +3045,10 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
         screen = 'voice-error'
         await bridge.rebuildPageContainer(
           new RebuildPageContainer(
-            buildVoiceStatusPayload('Не удалось расшифровать', '2×тап — назад'),
+            buildVoiceStatusPayload(
+              t('Не удалось расшифровать', 'Transcription failed'),
+              t('2×тап — назад', '2×tap — back'),
+            ),
           ),
         )
       }
@@ -3025,7 +3057,12 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
 
     if (recordingPurpose === 'append-note' && activeNote) {
       await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildVoiceStatusPayload('Расшифровка…', 'Дописываю заметку…')),
+        new RebuildPageContainer(
+          buildVoiceStatusPayload(
+            t('Расшифровка…', 'Transcribing…'),
+            t('Дописываю заметку…', 'Appending note…'),
+          ),
+        ),
       )
       try {
         const res = await appendNoteVoice(bridge, activeNote.id, encoded.wavBytes)
@@ -3038,7 +3075,12 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
 
     if (recordingPurpose === 'meeting-brief' && activeProposedMeeting) {
       await bridge.rebuildPageContainer(
-        new RebuildPageContainer(buildVoiceStatusPayload('Готовлю бриф…', 'Расшифровка + чат…')),
+        new RebuildPageContainer(
+          buildVoiceStatusPayload(
+            t('Готовлю бриф…', 'Preparing brief…'),
+            t('Расшифровка + чат…', 'Transcribing + chat…'),
+          ),
+        ),
       )
       try {
         preparedBrief = await prepareMeetingBriefVoice(
@@ -3142,9 +3184,25 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
   }
 
   const savedLang = await bridge.getLocalStorage(UI_LANG_KEY)
-  uiLang = savedLang === 'en' ? 'en' : 'ru'
-
   const storedToken = await getStoredDeviceToken(bridge)
+  if (savedLang === 'en' || savedLang === 'ru') {
+    uiLang = savedLang
+    if (storedToken) {
+      void updateSettings(bridge, { uiLang }).catch(() => {})
+    }
+  } else {
+    uiLang = 'ru'
+    if (storedToken) {
+      try {
+        const s = await fetchSettings(bridge)
+        if (s.uiLang === 'en' || s.uiLang === 'ru') {
+          uiLang = s.uiLang
+        }
+      } catch {
+        // default to 'ru'
+      }
+    }
+  }
 
   if (storedToken) {
     await enterHome(true)
@@ -3377,11 +3435,16 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
       if (itemId === MENU_LANGUAGE_ID) {
         uiLang = uiLang === 'ru' ? 'en' : 'ru'
         void bridge.setLocalStorage(UI_LANG_KEY, uiLang)
+        void updateSettings(bridge, { uiLang }).catch(() => {})
         if (screen === 'home' || screen === 'home-error') {
           lastHomeSignature = ''
           scheduleHomeRefresh(true)
         } else if (screen === 'meetings') {
           void openMeetingsFromHome()
+        } else if (screen === 'meeting-brief' && activeMeetingBrief) {
+          void bridge.rebuildPageContainer(
+            new RebuildPageContainer(buildMeetingBriefPayload(activeMeetingBrief)),
+          )
         } else if (screen === 'meeting-card' && activeMeetingBrief) {
           void bridge.rebuildPageContainer(
             new RebuildPageContainer(buildMeetingCardPayload(activeMeetingBrief)),

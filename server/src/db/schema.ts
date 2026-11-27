@@ -41,6 +41,9 @@ export const userSettings = sqliteTable('user_settings', {
   taskReminders: integer('task_reminders', { mode: 'boolean' })
     .notNull()
     .default(true),
+  uiLang: text('ui_lang', { enum: ['ru', 'en'] })
+    .notNull()
+    .default('ru'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 })

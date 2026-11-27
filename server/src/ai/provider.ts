@@ -22,7 +22,12 @@ export interface LlmProvider {
   readonly model: string
   completeJson<T>(opts: CompleteJsonOptions<T>): Promise<T>
   transcribeAudio?(buffer: Buffer, mime: string): Promise<TranscribeResult>
-  describeImage?(buffer: Buffer, mime: string, kind: 'sticker' | 'gif'): Promise<string>
+  describeImage?(
+    buffer: Buffer,
+    mime: string,
+    kind: 'sticker' | 'gif',
+    lang?: 'ru' | 'en',
+  ): Promise<string>
 }
 
 export type FetchLike = typeof fetch
@@ -272,9 +277,11 @@ export function createGeminiProvider(config: {
       buffer: Buffer,
       mime: string,
       kind: 'sticker' | 'gif',
+      lang: 'ru' | 'en' = 'ru',
     ): Promise<string> {
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
       const base64Data = buffer.toString('base64')
+      const targetLang = lang === 'en' ? 'English' : 'Russian'
       const res = await fetchImpl(endpoint, {
         method: 'POST',
         headers: {
@@ -293,7 +300,7 @@ export function createGeminiProvider(config: {
                   },
                 },
                 {
-                  text: `Describe what is shown in this ${kind} in 2 to 5 words in Russian (if it has text, include the short text). No quotes, no markdown, no extra commentary.`,
+                  text: `Describe what is shown in this ${kind} in 2 to 5 words in ${targetLang} (if it has text, include the short text). No quotes, no markdown, no extra commentary.`,
                 },
               ],
             },

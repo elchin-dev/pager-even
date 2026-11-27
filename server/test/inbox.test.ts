@@ -240,6 +240,7 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
     meetingReminders: true,
     briefAlerts: true,
     taskReminders: true,
+    uiLang: 'ru',
   })
 
   // Invalid settings rejected
@@ -448,6 +449,7 @@ test('GET/PUT /api/settings and GET /api/inbox?mode=urgent|all filter both feed 
     meetingReminders: true,
     briefAlerts: true,
     taskReminders: true,
+    uiLang: 'ru',
   })
 
   // Now GET /api/inbox uses 'all' from user_settings, sorted by received_at desc

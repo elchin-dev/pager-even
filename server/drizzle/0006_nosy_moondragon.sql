@@ -1,0 +1,1 @@
+ALTER TABLE `user_settings` ADD `ui_lang` text DEFAULT 'ru' NOT NULL;

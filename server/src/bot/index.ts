@@ -876,8 +876,11 @@ export function createBot(
       return
     }
 
+    const ownerLang = (msg.sticker || msg.animation)
+      ? getUserSettings(db, owner.id).uiLang
+      : 'ru'
     let messageText = msg.sticker
-      ? formatStickerText(msg.sticker)
+      ? formatStickerText(msg.sticker, ownerLang)
       : msg.animation
         ? formatGifText(msg.animation, msg.caption)
         : (msg.text ?? msg.caption ?? '')
@@ -904,11 +907,13 @@ export function createBot(
             imgBuf,
             visualTarget.mime,
             visualTarget.kind,
+            ownerLang,
           )
           if (desc) {
             if (msg.sticker) {
+              const word = ownerLang === 'en' ? 'Sticker' : 'Стикер'
               const emoji = msg.sticker.emoji?.trim()
-              messageText = emoji ? `[Стикер ${emoji}: ${desc}]` : `[Стикер: ${desc}]`
+              messageText = emoji ? `[${word} ${emoji}: ${desc}]` : `[${word}: ${desc}]`
             } else {
               const cleanCaption = msg.caption?.trim()
               messageText = cleanCaption

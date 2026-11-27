@@ -971,9 +971,17 @@ test('E2E Flow 7: Menu language toggle switches UI between Russian and English',
       ),
     )
 
-    // Click menu item 5 -> switch to EN
+    // Click menu item 5 -> switch to EN & sync uiLang to server
     h.emitEvent({ menuItemClickEvent: { itemID: 5 } })
     await flush(50)
+    assert.ok(
+      h.apiCalls.some(
+        (c) =>
+          c.method === 'PUT' &&
+          c.path === '/api/settings' &&
+          (c.body as { uiLang?: string })?.uiLang === 'en',
+      ),
+    )
     const homeEn = h.lastRender()
     assert.match(homeEn.listObject?.[0]?.itemContainer?.itemName?.[0] ?? '', /Messages/)
     assert.match(homeEn.listObject?.[0]?.itemContainer?.itemName?.[1] ?? '', /Meetings/)
@@ -981,11 +989,29 @@ test('E2E Flow 7: Menu language toggle switches UI between Russian and English',
       (homeEn.menuObject?.menuItems ?? []).some((m) => m.itemID === 5 && m.itemName === 'Язык: RU'),
     )
 
-    // Click menu item 5 again -> switch back to RU
+    // Open Messages -> Inbox & Card in EN: UI is English ("Messages: ...", "Skip"),
+    // while message text and quick replies MUST stay in original language!
+    h.emitEvent({
+      listEvent: { currentSelectItemIndex: 0, eventType: OsEventTypeList.CLICK_EVENT },
+    })
+    await flush()
+    assert.equal(h.lastRender().textObject?.[0]?.content, 'Messages: 6, urgent: 2')
+    h.emitEvent({
+      listEvent: { currentSelectItemIndex: 0, eventType: OsEventTypeList.CLICK_EVENT },
+    })
+    await flush()
+    assert.match(h.lastRender().textObject?.[2]?.content ?? '', /Пришли КП по проекту/)
+    h.emitEvent({ textEvent: { eventType: OsEventTypeList.CLICK_EVENT } })
+    await flush()
+    const enCardDrafts = h.lastRender().listObject?.[0]?.itemContainer?.itemName ?? []
+    assert.equal(enCardDrafts[0], 'Не успею, скину вечером')
+    assert.equal(enCardDrafts[enCardDrafts.length - 1], 'Skip')
+
+    // Click menu item 5 again -> switch back to RU (in-place on card, "Пропустить" returns)
     h.emitEvent({ menuItemClickEvent: { itemID: 5 } })
     await flush(50)
-    const homeRuAgain = h.lastRender()
-    assert.match(homeRuAgain.listObject?.[0]?.itemContainer?.itemName?.[0] ?? '', /Сообщения/)
+    const ruCardDrafts = h.lastRender().listObject?.[0]?.itemContainer?.itemName ?? []
+    assert.equal(ruCardDrafts[ruCardDrafts.length - 1], 'Пропустить')
   } finally {
     await h.restore()
   }

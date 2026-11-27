@@ -7,6 +7,7 @@ import type { AuthEnv } from '../middleware/auth.js'
 
 export type FeedMode = 'urgent' | 'all'
 export type ChatView = 'new_only' | 'with_history'
+export type UiLang = 'ru' | 'en'
 
 export interface UserSettingsDto {
   feedMode: FeedMode
@@ -16,6 +17,7 @@ export interface UserSettingsDto {
   meetingReminders: boolean
   briefAlerts: boolean
   taskReminders: boolean
+  uiLang: UiLang
 }
 
 const DEFAULT_SETTINGS: UserSettingsDto = {
@@ -26,6 +28,7 @@ const DEFAULT_SETTINGS: UserSettingsDto = {
   meetingReminders: true,
   briefAlerts: true,
   taskReminders: true,
+  uiLang: 'ru',
 }
 
 const updateSettingsSchema = z.object({
@@ -36,6 +39,7 @@ const updateSettingsSchema = z.object({
   meetingReminders: z.boolean().optional(),
   briefAlerts: z.boolean().optional(),
   taskReminders: z.boolean().optional(),
+  uiLang: z.enum(['ru', 'en']).optional(),
 })
 
 export function getUserSettings(db: AppDb, userId: number): UserSettingsDto {
@@ -57,6 +61,7 @@ export function getUserSettings(db: AppDb, userId: number): UserSettingsDto {
     meetingReminders: row.meetingReminders ?? true,
     briefAlerts: row.briefAlerts ?? true,
     taskReminders: row.taskReminders ?? true,
+    uiLang: row.uiLang === 'en' ? 'en' : 'ru',
   }
 }
 
@@ -74,6 +79,7 @@ export function patchUserSettings(
     meetingReminders: patch.meetingReminders ?? current.meetingReminders,
     briefAlerts: patch.briefAlerts ?? current.briefAlerts,
     taskReminders: patch.taskReminders ?? current.taskReminders,
+    uiLang: patch.uiLang ?? current.uiLang,
   }
   const now = Date.now()
 
@@ -87,6 +93,7 @@ export function patchUserSettings(
       meetingReminders: next.meetingReminders,
       briefAlerts: next.briefAlerts,
       taskReminders: next.taskReminders,
+      uiLang: next.uiLang,
       createdAt: now,
       updatedAt: now,
     })
@@ -100,6 +107,7 @@ export function patchUserSettings(
         meetingReminders: next.meetingReminders,
         briefAlerts: next.briefAlerts,
         taskReminders: next.taskReminders,
+        uiLang: next.uiLang,
         updatedAt: now,
       },
     })

@@ -43,6 +43,13 @@
       "when": 1795710441698,
       "tag": "0005_thin_silverclaw",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795779701409,
+      "tag": "0006_nosy_moondragon",
+      "breakpoints": true
     }
   ]
 }

@@ -26,12 +26,14 @@ export type PairStatusResponse =
 
 export type FeedMode = 'urgent' | 'all'
 export type ChatView = 'new_only' | 'with_history'
+export type UiLang = 'ru' | 'en'
 
 export interface UserSettings {
   feedMode: FeedMode
   chatView: ChatView
   voiceEnabled: boolean
   conflictAlerts: boolean
+  uiLang?: UiLang
 }
 
 export interface MessageMedia {
