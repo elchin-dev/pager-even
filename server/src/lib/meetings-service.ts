@@ -239,54 +239,47 @@ export async function generateMeetingBriefSummary(params: {
     return 'Без описания'
   }
 
-  const notesBlock =
-    noteSnippets.length > 0
-      ? noteSnippets
-          .slice(0, 2)
-          .map((t) => `- ${toOriginalLens(t, 120)}`)
-          .join('\n')
-      : ''
-
-  const baseFallbackParts: string[] = []
-  if (eventDescription) baseFallbackParts.push(toOriginalLens(eventDescription, 140))
-  if (baseFallbackParts.length === 0 && chatSnippets.length > 0) {
-    baseFallbackParts.push(toOriginalLens(chatSnippets[chatSnippets.length - 1] ?? '', 140))
+  const fallbackParts: string[] = []
+  if (eventDescription) fallbackParts.push(toOriginalLens(eventDescription, 140))
+  if (noteSnippets[0]) fallbackParts.push(`Заметка: ${toOriginalLens(noteSnippets[0], 140)}`)
+  if (fallbackParts.length === 0 && chatSnippets.length > 0) {
+    fallbackParts.push(toOriginalLens(chatSnippets[chatSnippets.length - 1] ?? '', 140))
   }
-  const baseFallback = baseFallbackParts.filter(Boolean).join('\n')
+  const fallbackText = toOriginalLens(fallbackParts.filter(Boolean).join('\n'), 280)
 
   const provider =
     params.provider !== undefined
       ? params.provider
       : getProviderForUser(params.userId, { db: params.db })
 
-  let mainSummary = baseFallback
-  if (provider && (eventDescription || chatSnippets.length > 0)) {
-    try {
-      const res = await provider.completeJson({
-        system: `You summarize a calendar meeting brief for smart glasses (<= 150 chars total) in Russian (keep original names/terms).
-Combine the event description and recent Telegram chat context with attendees (if provided).
-State concrete facts only; NEVER write meta-phrases like "учесть детали из заметки".
-Output ONLY raw JSON: {"summary": string}. No markdown, no quotes around the summary.`,
-        user: [
-          `Event title: ${params.event.summary}`,
-          eventDescription ? `Description: ${eventDescription.slice(0, 500)}` : '',
-          chatSnippets.length > 0 ? `Recent Telegram messages:\n${chatSnippets.join('\n')}` : '',
-        ]
-          .filter(Boolean)
-          .join('\n\n'),
-        schema: BRIEF_SCHEMA,
-        maxTokens: 140,
-      })
-      mainSummary = toOriginalLens(res.summary, 150) || baseFallback
-    } catch {
-      mainSummary = baseFallback
-    }
+  if (!provider) {
+    return fallbackText || 'Без описания'
   }
 
-  const combined = [mainSummary, notesBlock ? `Заметки:\n${notesBlock}` : '']
-    .filter(Boolean)
-    .join('\n\n')
-  return toOriginalLens(combined, 300) || 'Без описания'
+  try {
+    const res = await provider.completeJson({
+      system: `You create a concise, clean meeting brief for smart glasses (<= 280 chars total) in natural Russian (keep original names/terms).
+Combine the event description, user's voice/text notes, and recent Telegram chat context with attendees (if provided).
+Rules for user notes:
+1. Fix speech-to-text typos, grammar mistakes, and filler words from the notes so the text reads clearly.
+2. Include the CONCRETE facts, topics, numbers, and action items from the notes directly in the brief.
+3. STRICTLY FORBIDDEN to write vague meta-phrases like "важно учесть детали из голосовой заметки", "см. заметку", or "есть заметка" — always state the actual content.
+Output ONLY raw JSON: {"summary": string}. No markdown, no quotes around the summary.`,
+      user: [
+        `Event title: ${params.event.summary}`,
+        eventDescription ? `Description: ${eventDescription.slice(0, 500)}` : '',
+        noteSnippets.length > 0 ? `User notes (fix STT errors & include concrete points):\n${noteSnippets.join('\n')}` : '',
+        chatSnippets.length > 0 ? `Recent Telegram messages:\n${chatSnippets.join('\n')}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+      schema: BRIEF_SCHEMA,
+      maxTokens: 200,
+    })
+    return toOriginalLens(res.summary, 280) || fallbackText || 'Без описания'
+  } catch {
+    return fallbackText || 'Без описания'
+  }
 }
 
 export async function fetchUserUpcomingMeetings(params: {

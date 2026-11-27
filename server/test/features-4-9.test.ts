@@ -203,11 +203,20 @@ test('Prompt 4 & 5: voice notes, relevant-note filtering for replies, task remin
         allDay: false,
       },
       matchedChats: [],
-      provider: null,
+      provider: {
+        id: 'gemini',
+        model: 'mock',
+        async completeJson(opts) {
+          assert.match(opts.user, /повторить 49 процессов/)
+          return opts.schema.parse({
+            summary: 'Модуль 3: повторить 49 процессов и Agile-манифест.',
+          })
+        },
+      },
       nowMs,
     })
-    assert.match(briefText, /Урок по модулю 3/)
-    assert.match(briefText, /повторить 49 процессов/)
+    assert.match(briefText, /Модуль 3/)
+    assert.match(briefText, /49 процессов/)
 
     // 2) Outgoing reply WITH promise -> returns promiseSuggestion ("Да, сегодня в 19:00", "Напомнить скинуть КП?")
     db.insert(messages)
