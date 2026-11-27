@@ -2101,7 +2101,10 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
 
     await bridge.rebuildPageContainer(
       new RebuildPageContainer(
-        buildVoiceStatusPayload(`Удаление через ${secondsLeft}с…`, `${snippet}\n\n2x тап — отмена`),
+        buildVoiceStatusPayload(
+          t(`Удаление через ${secondsLeft}с…`, `Deleting in ${secondsLeft}s…`),
+          `${snippet}\n\n${t('2x тап — отмена', '2x tap — cancel')}`,
+        ),
       ),
     )
 
@@ -2116,12 +2119,19 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
           new TextContainerUpgrade({
             containerID: VOICE_HEADER_ID,
             containerName: VOICE_HEADER_NAME,
-            content: `Удаление через ${secondsLeft}с…`,
+            content: t(`Удаление через ${secondsLeft}с…`, `Deleting in ${secondsLeft}s…`),
           }),
         )
         return
       }
       stopSendTimer()
+      void bridge.textContainerUpgrade(
+        new TextContainerUpgrade({
+          containerID: VOICE_HEADER_ID,
+          containerName: VOICE_HEADER_NAME,
+          content: t('Удаляю…', 'Deleting…'),
+        }),
+      )
       void deleteNote(bridge, targetId)
         .then(() => {
           activeNote = null

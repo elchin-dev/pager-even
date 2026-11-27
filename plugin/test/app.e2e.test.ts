@@ -841,6 +841,14 @@ test('E2E Flow 3: Menu -> New Voice Note -> Match Meeting & Reminder -> Save -> 
       false,
       'Note delete MUST NOT be sent when cancelled in 3s window',
     )
+
+    // Now delete WITHOUT cancelling -> must call DELETE /api/notes/10 and return to notes-list
+    h.emitEvent({
+      listEvent: { currentSelectItemIndex: 2, eventType: OsEventTypeList.CLICK_EVENT },
+    })
+    await flush(3250)
+    assert.ok(h.apiCalls.some((c) => c.method === 'DELETE' && c.path === '/api/notes/10'))
+    assert.match(h.lastRender().textObject?.[0]?.content ?? '', /^Мои заметки/)
   } finally {
     await h.restore()
   }
