@@ -239,43 +239,54 @@ export async function generateMeetingBriefSummary(params: {
     return 'Без описания'
   }
 
-  const fallbackParts: string[] = []
-  if (eventDescription) fallbackParts.push(eventDescription)
-  if (noteSnippets[0]) fallbackParts.push(`Заметка: ${noteSnippets[0]}`)
-  if (fallbackParts.length === 0 && chatSnippets.length > 0) {
-    fallbackParts.push(chatSnippets[chatSnippets.length - 1] ?? '')
+  const notesBlock =
+    noteSnippets.length > 0
+      ? noteSnippets
+          .slice(0, 2)
+          .map((t) => `- ${toOriginalLens(t, 120)}`)
+          .join('\n')
+      : ''
+
+  const baseFallbackParts: string[] = []
+  if (eventDescription) baseFallbackParts.push(toOriginalLens(eventDescription, 140))
+  if (baseFallbackParts.length === 0 && chatSnippets.length > 0) {
+    baseFallbackParts.push(toOriginalLens(chatSnippets[chatSnippets.length - 1] ?? '', 140))
   }
-  const fallbackText = toOriginalLens(fallbackParts.filter(Boolean).join('\n'), 240)
+  const baseFallback = baseFallbackParts.filter(Boolean).join('\n')
 
   const provider =
     params.provider !== undefined
       ? params.provider
       : getProviderForUser(params.userId, { db: params.db })
 
-  if (!provider) {
-    return fallbackText || 'Без описания'
+  let mainSummary = baseFallback
+  if (provider && (eventDescription || chatSnippets.length > 0)) {
+    try {
+      const res = await provider.completeJson({
+        system: `You summarize a calendar meeting brief for smart glasses (<= 150 chars total) in Russian (keep original names/terms).
+Combine the event description and recent Telegram chat context with attendees (if provided).
+State concrete facts only; NEVER write meta-phrases like "учесть детали из заметки".
+Output ONLY raw JSON: {"summary": string}. No markdown, no quotes around the summary.`,
+        user: [
+          `Event title: ${params.event.summary}`,
+          eventDescription ? `Description: ${eventDescription.slice(0, 500)}` : '',
+          chatSnippets.length > 0 ? `Recent Telegram messages:\n${chatSnippets.join('\n')}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
+        schema: BRIEF_SCHEMA,
+        maxTokens: 140,
+      })
+      mainSummary = toOriginalLens(res.summary, 150) || baseFallback
+    } catch {
+      mainSummary = baseFallback
+    }
   }
 
-  try {
-    const res = await provider.completeJson({
-      system: `You summarize a calendar meeting brief for smart glasses (<= 240 chars total) in Russian (keep original names/terms).
-Combine the event description, attached/matching user notes (MUST include key points from notes if present), and recent Telegram chat context with attendees (if provided).
-Output ONLY raw JSON: {"summary": string}. No markdown, no quotes around the summary.`,
-      user: [
-        `Event title: ${params.event.summary}`,
-        eventDescription ? `Description: ${eventDescription.slice(0, 500)}` : '',
-        noteSnippets.length > 0 ? `User notes for this meeting:\n${noteSnippets.join('\n')}` : '',
-        chatSnippets.length > 0 ? `Recent Telegram messages:\n${chatSnippets.join('\n')}` : '',
-      ]
-        .filter(Boolean)
-        .join('\n\n'),
-      schema: BRIEF_SCHEMA,
-      maxTokens: 180,
-    })
-    return toOriginalLens(res.summary, 240) || fallbackText || 'Без описания'
-  } catch {
-    return fallbackText || 'Без описания'
-  }
+  const combined = [mainSummary, notesBlock ? `Заметки:\n${notesBlock}` : '']
+    .filter(Boolean)
+    .join('\n\n')
+  return toOriginalLens(combined, 300) || 'Без описания'
 }
 
 export async function fetchUserUpcomingMeetings(params: {

@@ -17,6 +17,7 @@ import {
 import { subscribeUserEvents, type UserEvent } from '../src/lib/events.js'
 import type { CalendarEventItem, GoogleCalendarClient } from '../src/lib/google-calendar.js'
 import { findRelevantNotes, runTaskAndPromiseReminderTick } from '../src/lib/notes-service.js'
+import { buildMeetingBriefSummary } from '../src/lib/meetings-service.js'
 import { parseProposedMeetingTime } from '../src/lib/time-parser.js'
 import { createMeetingsRouter } from '../src/routes/meetings.js'
 import { createMsgRouter } from '../src/routes/msg.js'
