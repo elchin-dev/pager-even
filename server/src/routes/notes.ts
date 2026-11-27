@@ -126,6 +126,7 @@ export function createNotesRouter(options?: {
         userId: authUser.id,
         text: cleaned,
         calendarClient: options?.calendarClient,
+        provider,
         nowMs: nowFn(),
       })
 

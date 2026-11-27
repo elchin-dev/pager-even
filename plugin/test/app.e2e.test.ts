@@ -796,21 +796,17 @@ test('E2E Flow 3: Menu -> New Voice Note -> Match Meeting & Reminder -> Save -> 
     assert.ok(h.apiCalls.some((c) => c.method === 'POST' && c.path === '/api/notes/transcribe'))
     const review = h.lastRender()
     assert.match(review.textObject?.[1]?.content ?? '', /Напоминание: завтра 10:00/)
+    assert.match(review.textObject?.[1]?.content ?? '', /Относится к: Standup 15:00/)
     const revItems = review.listObject?.[0]?.itemContainer?.itemName ?? []
-    assert.ok(revItems.includes('Привязать: Standup 15:00'))
-    assert.ok(revItems.includes('Сохранить с напоминанием'))
+    assert.ok(revItems.includes('Добавить к: Standup 15:00'))
+    assert.ok(revItems.includes('Только напоминание'))
     assert.ok(revItems.includes('Без напоминания'))
 
-    // Tap "Привязать: Standup 15:00"
-    const bindIdx = revItems.indexOf('Привязать: Standup 15:00')
-    assert.ok(bindIdx >= 0)
+    // Tap "Добавить к: Standup 15:00" (index 0) -> immediately saves note linked to meeting + reminder
+    const bindIdx = revItems.indexOf('Добавить к: Standup 15:00')
+    assert.equal(bindIdx, 0)
     h.emitEvent({
       listEvent: { currentSelectItemIndex: bindIdx, eventType: OsEventTypeList.CLICK_EVENT },
-    })
-    await flush()
-    // Now tap "Сохранить с напоминанием" (index 0)
-    h.emitEvent({
-      listEvent: { currentSelectItemIndex: 0, eventType: OsEventTypeList.CLICK_EVENT },
     })
     await flush()
 

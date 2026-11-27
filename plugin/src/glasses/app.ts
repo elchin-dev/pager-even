@@ -2009,16 +2009,26 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
   function getNoteReviewActions(): Array<{ id: string; label: string }> {
     if (!noteDraftAnalysis) return []
     const items: Array<{ id: string; label: string }> = []
-    if (noteDraftAnalysis.taskReminder) {
-      items.push({ id: 'save_rem', label: t('Сохранить с напоминанием', 'Save + reminder') })
-      items.push({ id: 'save_no_rem', label: t('Без напоминания', 'Without reminder') })
-    } else {
-      items.push({ id: 'save_no_rem', label: t('Сохранить', 'Save') })
-    }
     if (noteDraftAnalysis.matchedMeeting && !noteDraftBindMeeting) {
       items.push({
-        id: 'bind_matched',
-        label: `${t('Привязать', 'Link')}: ${noteDraftAnalysis.matchedMeeting.label}`,
+        id: 'save_bind',
+        label: `${t('Добавить к', 'Add to')}: ${noteDraftAnalysis.matchedMeeting.label}`,
+      })
+    }
+    if (noteDraftAnalysis.taskReminder) {
+      items.push({
+        id: 'save_rem',
+        label: noteDraftAnalysis.matchedMeeting && !noteDraftBindMeeting
+          ? t('Только напоминание', 'Reminder only')
+          : t('Сохранить с напоминанием', 'Save + reminder'),
+      })
+      items.push({ id: 'save_no_rem', label: t('Без напоминания', 'Without reminder') })
+    } else {
+      items.push({
+        id: 'save_no_rem',
+        label: noteDraftAnalysis.matchedMeeting && !noteDraftBindMeeting
+          ? t('Сохранить без встречи', 'Save without meeting')
+          : t('Сохранить', 'Save'),
       })
     }
     items.push({ id: 'rerecord', label: t('Записать заново', 'Re-record') })
@@ -2036,6 +2046,8 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     }
     if (noteDraftBindMeeting) {
       lines.push(`${t('Встреча', 'Meeting')}: ${noteDraftBindMeeting.label}`)
+    } else if (noteDraftAnalysis.matchedMeeting) {
+      lines.push(`${t('Относится к', 'Related to')}: ${noteDraftAnalysis.matchedMeeting.label}`)
     }
     const actions = getNoteReviewActions()
     await bridge.rebuildPageContainer(
@@ -3650,12 +3662,17 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
         const actions = getNoteReviewActions()
         const idx = event.listEvent?.currentSelectItemIndex ?? noteReviewActionIndex
         const chosen = actions[idx]
-        if (chosen?.id === 'bind_matched' && noteDraftAnalysis.matchedMeeting) {
-          noteDraftBindMeeting = {
-            eventId: noteDraftAnalysis.matchedMeeting.eventId,
-            label: noteDraftAnalysis.matchedMeeting.label,
-          }
-          void renderNoteReviewScreen()
+        if (chosen?.id === 'save_bind' && noteDraftAnalysis.matchedMeeting) {
+          const analysis = noteDraftAnalysis
+          const matched = noteDraftAnalysis.matchedMeeting
+          noteDraftAnalysis = null
+          noteDraftBindMeeting = null
+          void createNote(bridge, {
+            text: analysis.transcript,
+            meetingEventId: matched.eventId,
+            meetingTitle: matched.label,
+            remindAt: analysis.taskReminder?.remindAt ?? null,
+          }).then(() => openNotesList())
         } else if (chosen?.id === 'rerecord') {
           void startVoiceRecording('menu', 'new-note')
         } else if (chosen?.id === 'discard') {

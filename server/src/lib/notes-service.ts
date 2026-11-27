@@ -141,11 +141,16 @@ export function matchNoteToCalendarMeeting(
   return null
 }
 
+const NOTE_MEETING_MATCH_SCHEMA = z.object({
+  matchedIndex: z.number().int().min(0).max(20).nullable(),
+})
+
 export async function analyzeNoteText(params: {
   db: AppDb
   userId: number
   text: string
   calendarClient?: GoogleCalendarClient
+  provider?: LlmProvider | null
   nowMs?: number
 }): Promise<NoteDraftAnalysis> {
   const now = params.nowMs ?? Date.now()
@@ -164,14 +169,59 @@ export async function analyzeNoteText(params: {
       userId: params.userId,
       calendarClient: cal,
       nowMs: now,
-      horizonHours: 48,
+      horizonHours: 72,
     })
     upcoming = fetched.events
   } catch {
     upcoming = []
   }
 
-  const matchedMeeting = matchNoteToCalendarMeeting(params.text, upcoming, tz)
+  let matchedMeeting = matchNoteToCalendarMeeting(params.text, upcoming, tz)
+
+  if (!matchedMeeting && upcoming.length > 0 && params.text.trim()) {
+    const provider =
+      params.provider !== undefined
+        ? params.provider
+        : getProviderForUser(params.userId, { db: params.db })
+    if (provider) {
+      try {
+        const candidates = upcoming.slice(0, 12)
+        const listText = candidates
+          .map((ev, idx) => {
+            const hhmm = formatTimeHHMM(ev.startMs, tz)
+            const descPart = ev.description ? ` — ${ev.description.slice(0, 80)}` : ''
+            return `${idx}: ${ev.summary} (${hhmm})${descPart}`
+          })
+          .join('\n')
+        const res = await provider.completeJson({
+          system: `Determine whether the user's note is related to any of the upcoming calendar meetings (by topic, project, course, person, or context).
+If it clearly relates to one meeting, return its 0-based index; otherwise return null.
+Output ONLY raw JSON: {"matchedIndex": number | null}.`,
+          user: `Note:\n${params.text.slice(0, 500)}\n\nUpcoming meetings:\n${listText}`,
+          schema: NOTE_MEETING_MATCH_SCHEMA,
+          maxTokens: 40,
+        })
+        if (
+          res.matchedIndex !== null &&
+          res.matchedIndex >= 0 &&
+          res.matchedIndex < candidates.length
+        ) {
+          const ev = candidates[res.matchedIndex]!
+          const startTime = formatTimeHHMM(ev.startMs, tz)
+          const cleanTitle = toOriginalLens(ev.summary, 18) || 'Встреча'
+          matchedMeeting = {
+            eventId: ev.id,
+            title: cleanTitle,
+            startTime,
+            label: `${cleanTitle} ${startTime}`,
+          }
+        }
+      } catch {
+        // Keep deterministic match result on AI failure
+      }
+    }
+  }
+
   const taskReminder = parseNoteTaskReminder(params.text, now, tz)
 
   return {

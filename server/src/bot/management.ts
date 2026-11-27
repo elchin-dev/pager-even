@@ -375,11 +375,13 @@ export function registerBotManagement(params: {
       }
     }
 
+    const provider = resolveProvider(userId)
     const analysis = await analyzeNoteText({
       db,
       userId,
       text: cleaned,
       calendarClient,
+      provider,
     })
     const now = Date.now()
     const ins = db
@@ -387,8 +389,8 @@ export function registerBotManagement(params: {
       .values({
         userId,
         text: cleaned,
-        meetingEventId: analysis.matchedMeeting?.eventId ?? null,
-        meetingTitle: analysis.matchedMeeting?.label ?? null,
+        meetingEventId: null,
+        meetingTitle: null,
         remindAt: analysis.taskReminder?.remindAt ?? null,
         taskCompletedAt: null,
         createdAt: now,
@@ -396,42 +398,33 @@ export function registerBotManagement(params: {
       })
       .run()
     const noteId = Number(ins.lastInsertRowid)
+    const remInfo = analysis.taskReminder ? `\nНапоминание: ${analysis.taskReminder.label}` : ''
 
-    let upcomingButtons: Array<Array<{ text: string; callback_data: string }>> = []
-    try {
-      const { events, tz } = await fetchUserUpcomingMeetings({
-        db,
-        userId,
-        calendarClient,
-        nowMs: now,
-        horizonHours: 48,
-      })
-      upcomingButtons = events.slice(0, 3).map((ev) => {
-        const label = `${toOriginalLens(ev.summary, 16)} ${formatTimeHHMM(ev.startMs, tz)}`
-        return [
-          {
-            text: `Привязать: ${label}`,
-            callback_data: `nt:bind:${noteId}:${ev.id.slice(0, 40)}`,
+    if (analysis.matchedMeeting) {
+      const m = analysis.matchedMeeting
+      await ctx.reply(
+        `Заметка сохранена.${remInfo}\n\nПохоже, она относится ко встрече «${m.label}». Добавить к этой встрече?`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: `Добавить к «${m.label}»`,
+                  callback_data: `nt:bind:${noteId}:${m.eventId.slice(0, 40)}`,
+                },
+              ],
+              [
+                { text: 'Нет, просто заметка', callback_data: `nt:unm:${noteId}` },
+                { text: 'Удалить', callback_data: `nt:del:${noteId}` },
+              ],
+            ],
           },
-        ]
-      })
-    } catch {
-      upcomingButtons = []
+        },
+      )
+      return
     }
 
-    upcomingButtons.push([
-      { text: 'Без встречи', callback_data: `nt:unm:${noteId}` },
-      { text: 'Удалить', callback_data: `nt:del:${noteId}` },
-    ])
-
-    const remInfo = analysis.taskReminder ? `\nНапоминание: ${analysis.taskReminder.label}` : ''
-    const meetInfo = analysis.matchedMeeting
-      ? `\nПривязана ко встрече: ${analysis.matchedMeeting.label}`
-      : ''
-
-    await ctx.reply(`Заметка сохранена.${remInfo}${meetInfo}\nПривязать к встрече?`, {
-      reply_markup: { inline_keyboard: upcomingButtons },
-    })
+    await ctx.reply(`Заметка сохранена.${remInfo}`)
   }
 
   bot.command('settings', async (ctx) => {

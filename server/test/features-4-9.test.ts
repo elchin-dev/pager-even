@@ -16,7 +16,7 @@ import {
 } from '../src/lib/digest-service.js'
 import { subscribeUserEvents, type UserEvent } from '../src/lib/events.js'
 import type { CalendarEventItem, GoogleCalendarClient } from '../src/lib/google-calendar.js'
-import { findRelevantNotes, runTaskAndPromiseReminderTick } from '../src/lib/notes-service.js'
+import { analyzeNoteText, findRelevantNotes, runTaskAndPromiseReminderTick } from '../src/lib/notes-service.js'
 import { generateMeetingBriefSummary } from '../src/lib/meetings-service.js'
 import { parseProposedMeetingTime } from '../src/lib/time-parser.js'
 import { createMeetingsRouter } from '../src/routes/meetings.js'
@@ -217,6 +217,39 @@ test('Prompt 4 & 5: voice notes, relevant-note filtering for replies, task remin
     })
     assert.match(briefText, /Модуль 3/)
     assert.match(briefText, /49 процессов/)
+
+    // AI meeting relevance analysis: note without literal meeting title words still matches via AI
+    const semanticMatch = await analyzeNoteText({
+      db,
+      userId: 1,
+      text: 'Не забыть спросить про бюджет на рекламу и показать слайды',
+      calendarClient: mockCal,
+      provider: {
+        id: 'gemini',
+        model: 'mock',
+        async completeJson(opts) {
+          return opts.schema.parse({ matchedIndex: 0 })
+        },
+      },
+      nowMs,
+    })
+    assert.equal(semanticMatch.matchedMeeting?.eventId, 'ev_standup')
+
+    const unrelatedMatch = await analyzeNoteText({
+      db,
+      userId: 1,
+      text: 'Купить молоко и хлеб вечером',
+      calendarClient: mockCal,
+      provider: {
+        id: 'gemini',
+        model: 'mock',
+        async completeJson(opts) {
+          return opts.schema.parse({ matchedIndex: null })
+        },
+      },
+      nowMs,
+    })
+    assert.equal(unrelatedMatch.matchedMeeting, null)
 
     // 2) Outgoing reply WITH promise -> returns promiseSuggestion ("Да, сегодня в 19:00", "Напомнить скинуть КП?")
     db.insert(messages)
