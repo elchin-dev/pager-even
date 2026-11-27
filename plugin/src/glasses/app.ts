@@ -1606,7 +1606,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     }
     isRefreshingHome = true
     try {
-      const data = await (prefetched ?? fetchHome(bridge))
+      const data = await (prefetched ?? fetchHome(bridge, uiLang))
       if (disposed || (screen !== 'home' && screen !== 'home-error')) return
       const nextSig = JSON.stringify({
         nowTime: data.nowTime,
@@ -1695,7 +1695,7 @@ export async function startGlassesApp(overrideBridge?: EvenAppBridge): Promise<v
     lastHomeSignature = ''
     renderPhoneInbox(0)
 
-    const initialFetch = fetchHome(bridge)
+    const initialFetch = fetchHome(bridge, uiLang)
     if (isStartup) {
       await bridge.createStartUpPageContainer(
         new CreateStartUpPageContainer(buildHomePayload(null, t('Загрузка…', 'Loading…'))),

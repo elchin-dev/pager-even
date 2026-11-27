@@ -149,7 +149,7 @@ function createTestHarness(options?: {
       if (custom) return custom
     }
 
-    if (path === '/api/home' && method === 'GET') {
+    if (path.startsWith('/api/home') && method === 'GET') {
       return {
         json: {
           nowTime: '14:50',

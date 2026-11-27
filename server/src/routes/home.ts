@@ -15,6 +15,7 @@ import { logger } from '../lib/logger.js'
 import { localClockToEpochMs } from '../lib/time-parser.js'
 import { toOriginalLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
+import { getUserSettings, type UiLang } from './settings.js'
 
 const homeAiSchema = triageResultSchema.extend({
   conflict: z
@@ -97,9 +98,9 @@ function getLocalDateKey(ms: number, tz: string): string {
   }
 }
 
-function formatShortDateRu(ms: number, tz: string): string {
+function formatShortDate(ms: number, tz: string, lang: UiLang): string {
   try {
-    const parts = new Intl.DateTimeFormat('ru-RU', {
+    const parts = new Intl.DateTimeFormat(lang === 'en' ? 'en-US' : 'ru-RU', {
       timeZone: tz,
       day: 'numeric',
       month: 'short',
@@ -149,6 +150,11 @@ export function createHomeRouter(options?: {
       .get()
     const tz = resolveUserTimeZone(userRow?.tz)
     const nowTime = formatTimeHHMM(now, tz)
+    const queryLang = c.req.query('lang')
+    const uiLang: UiLang =
+      queryLang === 'en' || queryLang === 'ru'
+        ? queryLang
+        : getUserSettings(db, authUser.id).uiLang
 
     // 1. Unread incoming messages grouped by chatId (newest first)
     const msgRows = db
@@ -245,12 +251,16 @@ export function createHomeRouter(options?: {
     const todayEvents = timedFuture.filter((ev) => getLocalDateKey(ev.startMs, tz) === todayKey)
     const nextTodayEvent = todayEvents.find((ev) => ev.startMs >= now) ?? todayEvents[0] ?? null
 
-    let headerMeeting = 'встреч нет'
+    let headerMeeting = uiLang === 'en' ? 'no meetings' : 'встреч нет'
     if (nextTodayEvent) {
-      const shortTitle = toOriginalLens(nextTodayEvent.summary, 16) || 'Встреча'
+      const shortTitle =
+        toOriginalLens(nextTodayEvent.summary, 16) || (uiLang === 'en' ? 'Meeting' : 'Встреча')
       const diffMin = Math.round((nextTodayEvent.startMs - now) / 60_000)
       if (diffMin > 0 && diffMin < 60) {
-        headerMeeting = `${shortTitle} через ${diffMin} мин`
+        headerMeeting =
+          uiLang === 'en'
+            ? `${shortTitle} in ${diffMin} min`
+            : `${shortTitle} через ${diffMin} мин`
       } else {
         headerMeeting = `${shortTitle} ${formatTimeHHMM(nextTodayEvent.startMs, tz)}`
       }
@@ -265,12 +275,22 @@ export function createHomeRouter(options?: {
       if (nextKey === todayKey) {
         nextMeetingLine =
           diffMin > 0 && diffMin < 60
-            ? `след. встреча через ${diffMin} мин`
-            : `след. встреча сегодня ${startHHMM}`
+            ? uiLang === 'en'
+              ? `next meeting in ${diffMin} min`
+              : `след. встреча через ${diffMin} мин`
+            : uiLang === 'en'
+              ? `next meeting today ${startHHMM}`
+              : `след. встреча сегодня ${startHHMM}`
       } else if (nextKey === tomorrowKey) {
-        nextMeetingLine = `след. встреча завтра ${startHHMM}`
+        nextMeetingLine =
+          uiLang === 'en'
+            ? `next meeting tomorrow ${startHHMM}`
+            : `след. встреча завтра ${startHHMM}`
       } else {
-        nextMeetingLine = `след. встреча ${formatShortDateRu(nextAny.startMs, tz)} ${startHHMM}`
+        nextMeetingLine =
+          uiLang === 'en'
+            ? `next meeting ${formatShortDate(nextAny.startMs, tz, 'en')} ${startHHMM}`
+            : `след. встреча ${formatShortDate(nextAny.startMs, tz, 'ru')} ${startHHMM}`
       }
     }
 

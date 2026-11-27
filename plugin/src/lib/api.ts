@@ -314,8 +314,9 @@ export async function apiFetch(
   })
 }
 
-export async function fetchHome(bridge: EvenAppBridge): Promise<HomeResponse> {
-  const res = await apiFetch(bridge, '/api/home', { method: 'GET' })
+export async function fetchHome(bridge: EvenAppBridge, lang?: UiLang): Promise<HomeResponse> {
+  const q = lang ? `?lang=${encodeURIComponent(lang)}` : ''
+  const res = await apiFetch(bridge, `/api/home${q}`, { method: 'GET' })
   return parseJson<HomeResponse>(res)
 }
 
