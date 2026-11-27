@@ -635,6 +635,16 @@ test('Prompt 8 & 9: public t.me/s/<channel> digest scraper, 30m rate limit, Home
     ).json()) as { items: unknown[] }
     assert.equal(digNextDay.items.length, 0)
 
+    // CORS preflight allows DELETE for note deletion from simulator/webview
+    const preflight = await app.request('/api/notes/1', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://localhost:5173',
+        'Access-Control-Request-Method': 'DELETE',
+      },
+    })
+    assert.match(preflight.headers.get('access-control-allow-methods') ?? '', /DELETE/)
+
     // Bot management views (/settings, /notes, /channels) include inline buttons
     db.insert(notes)
       .values({
