@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, lt } from 'drizzle-orm'
+import { and, desc, eq, gt, gte, lt } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { getProviderForUser, type LlmProvider } from '../ai/provider.js'
@@ -7,12 +7,12 @@ import { channels, digestPosts, users } from '../db/schema.js'
 import { resolveUserTimeZone } from './google-calendar.js'
 import { logger } from './logger.js'
 import { formatTimeHHMM } from './meetings-service.js'
+import { localClockToEpochMs } from './time-parser.js'
 import { toOriginalLens } from './translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
 
 export const MAX_CHANNELS_PER_USER = 20
 export const CHANNEL_CHECK_INTERVAL_MS = 30 * 60 * 1000
-const DIGEST_POST_TTL_MS = 48 * 60 * 60 * 1000
 
 export interface ScrapedChannelPost {
   postId: number
@@ -186,11 +186,21 @@ export async function syncSingleChannel(params: {
     return { addedPosts: 0, skippedRateLimit: false }
   }
 
+  const userRow = params.db
+    .select({ tz: users.tz })
+    .from(users)
+    .where(eq(users.id, params.channelRow.userId))
+    .get()
+  const tz = resolveUserTimeZone(userRow?.tz)
+  const todayStartMs = localClockToEpochMs(now, tz, 0, 0, 0)
+  const tomorrowStartMs = localClockToEpochMs(now, tz, 1, 0, 0)
+
   const lastId = params.channelRow.lastPostId ?? 0
-  const candidates =
+  const candidates = (
     lastId > 0
       ? page.posts.filter((p) => p.postId > lastId).slice(-6)
       : page.posts.slice(-3)
+  ).filter((p) => p.publishedAt >= todayStartMs)
 
   const provider =
     params.provider !== undefined
@@ -214,7 +224,7 @@ export async function syncSingleChannel(params: {
         text: post.text,
         gist,
         publishedAt: post.publishedAt,
-        expiresAt: now + DIGEST_POST_TTL_MS,
+        expiresAt: tomorrowStartMs,
       })
       .onConflictDoNothing()
       .run()
@@ -233,8 +243,8 @@ export async function syncSingleChannel(params: {
     .where(eq(channels.id, params.channelRow.id))
     .run()
 
-  // Prune expired digest posts (> 48h)
-  params.db.delete(digestPosts).where(lt(digestPosts.expiresAt, now)).run()
+  // Prune digest posts from previous days
+  params.db.delete(digestPosts).where(lt(digestPosts.publishedAt, todayStartMs)).run()
 
   return { addedPosts, skippedRateLimit: false }
 }
@@ -293,11 +303,18 @@ export function createDigestRouter(options?: {
       .where(eq(users.id, authUser.id))
       .get()
     const tz = resolveUserTimeZone(userRow?.tz)
+    const todayStartMs = localClockToEpochMs(now, tz, 0, 0, 0)
 
     const rows = db
       .select()
       .from(digestPosts)
-      .where(and(eq(digestPosts.userId, authUser.id), gt(digestPosts.expiresAt, now)))
+      .where(
+        and(
+          eq(digestPosts.userId, authUser.id),
+          gte(digestPosts.publishedAt, todayStartMs),
+          gt(digestPosts.expiresAt, now),
+        ),
+      )
       .orderBy(desc(digestPosts.publishedAt), desc(digestPosts.id))
       .limit(20)
       .all()
@@ -320,6 +337,14 @@ export function createDigestRouter(options?: {
     const db = options?.db ?? getDb()
     const now = nowFn()
 
+    const userRow = db
+      .select({ tz: users.tz })
+      .from(users)
+      .where(eq(users.id, authUser.id))
+      .get()
+    const tz = resolveUserTimeZone(userRow?.tz)
+    const todayStartMs = localClockToEpochMs(now, tz, 0, 0, 0)
+
     const row = db
       .select()
       .from(digestPosts)
@@ -327,18 +352,12 @@ export function createDigestRouter(options?: {
         and(
           eq(digestPosts.id, parsed.data),
           eq(digestPosts.userId, authUser.id),
+          gte(digestPosts.publishedAt, todayStartMs),
           gt(digestPosts.expiresAt, now),
         ),
       )
       .get()
     if (!row) return c.json({ error: 'not_found' }, 404)
-
-    const userRow = db
-      .select({ tz: users.tz })
-      .from(users)
-      .where(eq(users.id, authUser.id))
-      .get()
-    const tz = resolveUserTimeZone(userRow?.tz)
 
     return c.json({
       id: row.id,

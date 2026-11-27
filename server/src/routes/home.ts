@@ -1,4 +1,4 @@
-import { and, desc, eq, gt } from 'drizzle-orm'
+import { and, desc, eq, gt, gte } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { triageResultSchema } from '../ai/triage.js'
@@ -12,6 +12,7 @@ import {
   type GoogleCalendarClient,
 } from '../lib/google-calendar.js'
 import { logger } from '../lib/logger.js'
+import { localClockToEpochMs } from '../lib/time-parser.js'
 import { toOriginalLens } from '../lib/translit.js'
 import type { AuthEnv } from '../middleware/auth.js'
 
@@ -296,12 +297,19 @@ export function createHomeRouter(options?: {
       .from(channels)
       .where(eq(channels.userId, authUser.id))
       .all()
+    const todayStartMs = localClockToEpochMs(now, tz, 0, 0, 0)
     const activeDigestPosts =
       userChannels.length > 0
         ? db
             .select({ id: digestPosts.id })
             .from(digestPosts)
-            .where(and(eq(digestPosts.userId, authUser.id), gt(digestPosts.expiresAt, now)))
+            .where(
+              and(
+                eq(digestPosts.userId, authUser.id),
+                gte(digestPosts.publishedAt, todayStartMs),
+                gt(digestPosts.expiresAt, now),
+              ),
+            )
             .all()
         : []
 

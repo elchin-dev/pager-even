@@ -564,7 +564,8 @@ test('Prompt 8 & 9: public t.me/s/<channel> digest scraper, 30m rate limit, Home
     assert.equal(sync2.skippedRateLimit, true)
 
     // Home now enables Digest button with count = 1, and GET /api/digest returns the post
-    const app = createApp({ db })
+    let fakeNow = nowMs
+    const app = createApp({ db, nowProvider: () => fakeNow })
     const homeRes = await app.request('/api/home', {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -581,6 +582,17 @@ test('Prompt 8 & 9: public t.me/s/<channel> digest scraper, 30m rate limit, Home
     assert.equal(digList.items.length, 1)
     assert.equal(digList.items[0]?.channel, 'Крипто Daily')
     assert.equal(digList.items[0]?.time, '14:20')
+
+    // Next local day (2026-11-27 00:05 Tashkent): yesterday's digest posts are cleared/hidden
+    fakeNow = Date.parse('2026-11-26T19:05:00.000Z')
+    const homeNextDay = (await (
+      await app.request('/api/home', { headers: { Authorization: `Bearer ${token}` } })
+    ).json()) as { digest: { enabled: boolean; count: number } }
+    assert.equal(homeNextDay.digest.count, 0)
+    const digNextDay = (await (
+      await app.request('/api/digest', { headers: { Authorization: `Bearer ${token}` } })
+    ).json()) as { items: unknown[] }
+    assert.equal(digNextDay.items.length, 0)
 
     // Bot management views (/settings, /notes, /channels) include inline buttons
     db.insert(notes)

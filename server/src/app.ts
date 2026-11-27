@@ -31,6 +31,7 @@ export interface AppOptions {
   sendTelegramVoice?: SendTelegramVoiceFn
   transcodeWav?: TranscodeWavFn
   calendarClient?: GoogleCalendarClient
+  nowProvider?: () => number
 }
 
 export function createApp(options?: AppOptions): Hono<AuthEnv> {
@@ -64,7 +65,11 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
   app.route('/api/pair', createPairRouter({ db: options?.db, ...options?.pair }))
   app.route(
     '/api/home',
-    createHomeRouter({ db: options?.db, calendarClient: options?.calendarClient }),
+    createHomeRouter({
+      db: options?.db,
+      calendarClient: options?.calendarClient,
+      nowProvider: options?.nowProvider,
+    }),
   )
   app.route(
     '/api/meetings',
@@ -82,7 +87,7 @@ export function createApp(options?: AppOptions): Hono<AuthEnv> {
     }),
   )
   app.route('/api/promises', createPromisesRouter({ db: options?.db }))
-  app.route('/api/digest', createDigestRouter({ db: options?.db }))
+  app.route('/api/digest', createDigestRouter({ db: options?.db, nowProvider: options?.nowProvider }))
   app.route('/api/settings', createSettingsRouter({ db: options?.db }))
   app.route('/api/inbox', createInboxRouter({ db: options?.db }))
   app.route(
