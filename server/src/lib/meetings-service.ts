@@ -261,9 +261,10 @@ export async function generateMeetingBriefSummary(params: {
       system: `You create a concise, clean meeting brief for smart glasses (<= 280 chars total) in natural Russian (keep original names/terms).
 Combine the event description, user's voice/text notes, and recent Telegram chat context with attendees (if provided).
 Rules for user notes:
-1. Fix speech-to-text typos, grammar mistakes, and filler words from the notes so the text reads clearly.
-2. Include the CONCRETE facts, topics, numbers, and action items from the notes directly in the brief.
-3. STRICTLY FORBIDDEN to write vague meta-phrases like "важно учесть детали из голосовой заметки", "см. заметку", or "есть заметка" — always state the actual content.
+1. Fix ONLY obvious speech-to-text typos, grammar mistakes, and filler words.
+2. NEVER change, guess, or substitute numbers, versions, editions, or dates (e.g. keep "8" as "8", never replace with "6"), and NEVER add facts from general knowledge that are not in the event, notes, or chat.
+3. Include the CONCRETE facts, topics, numbers, and action items from the notes directly in the brief.
+4. STRICTLY FORBIDDEN to write vague meta-phrases like "важно учесть детали из голосовой заметки", "см. заметку", or "есть заметка".
 Output ONLY raw JSON: {"summary": string}. No markdown, no quotes around the summary.`,
       user: [
         `Event title: ${params.event.summary}`,
