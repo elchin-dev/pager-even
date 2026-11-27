@@ -17,7 +17,7 @@ import {
 import { subscribeUserEvents, type UserEvent } from '../src/lib/events.js'
 import type { CalendarEventItem, GoogleCalendarClient } from '../src/lib/google-calendar.js'
 import { findRelevantNotes, runTaskAndPromiseReminderTick } from '../src/lib/notes-service.js'
-import { buildMeetingBriefSummary } from '../src/lib/meetings-service.js'
+import { generateMeetingBriefSummary } from '../src/lib/meetings-service.js'
 import { parseProposedMeetingTime } from '../src/lib/time-parser.js'
 import { createMeetingsRouter } from '../src/routes/meetings.js'
 import { createMsgRouter } from '../src/routes/msg.js'
@@ -177,6 +177,37 @@ test('Prompt 4 & 5: voice notes, relevant-note filtering for replies, task remin
     const matchedNotes = findRelevantNotes(db, 1, 'Сколько стоит сделать сайт под ключ?')
     assert.equal(matchedNotes.length, 1)
     assert.match(matchedNotes[0]!.text, /сайт 800/)
+
+    // Meeting brief always includes verbatim note text (not vague AI meta-summary)
+    db.insert(notes)
+      .values({
+        userId: 1,
+        text: 'PMP курс: повторить 49 процессов и Agile манифест',
+        meetingEventId: null,
+        meetingTitle: null,
+        remindAt: null,
+        taskCompletedAt: null,
+        createdAt: nowMs,
+        updatedAt: nowMs,
+      })
+      .run()
+    const briefText = await generateMeetingBriefSummary({
+      db,
+      userId: 1,
+      event: {
+        id: 'ev_pmp_1',
+        summary: 'Изучение подготовки на PMP курса',
+        description: 'Урок по модулю 3',
+        startMs: nowMs + 3600_000,
+        endMs: nowMs + 7200_000,
+        allDay: false,
+      },
+      matchedChats: [],
+      provider: null,
+      nowMs,
+    })
+    assert.match(briefText, /Урок по модулю 3/)
+    assert.match(briefText, /повторить 49 процессов/)
 
     // 2) Outgoing reply WITH promise -> returns promiseSuggestion ("Да, сегодня в 19:00", "Напомнить скинуть КП?")
     db.insert(messages)
